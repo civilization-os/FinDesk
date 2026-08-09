@@ -30,6 +30,26 @@ docker compose down
 `finforge-data` 中，普通的 `docker compose down` 或容器重建不会删除；只有显式执行
 `docker compose down -v` 才会一并删除该卷及其中配置。
 
+### 直接运行 GHCR 成品镜像
+
+服务器不需要源码、Node 或 Python，只需下载仓库中的 `compose.prod.yaml`，然后执行：
+
+```bash
+docker compose -f compose.prod.yaml pull
+docker compose -f compose.prod.yaml up -d
+```
+
+该配置直接拉取以下镜像，不会在服务器本地构建：
+
+```text
+ghcr.io/civilization-os/findesk-web:latest
+ghcr.io/civilization-os/findesk-api:latest
+```
+
+复制 `.env.example` 为 `.env` 后，可通过 `FINFORGE_IMAGE_TAG` 固定版本，例如
+`FINFORGE_IMAGE_TAG=1.0.0`，避免生产环境长期跟随 `latest`。升级与回滚使用相同命令，
+修改镜像标签后重新执行 `pull` 和 `up -d` 即可。
+
 ## CI/CD
 
 仓库内置 GitHub Actions：
