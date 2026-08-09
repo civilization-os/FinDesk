@@ -1,0 +1,16 @@
+.git
+.gitignore
+.reasonix
+.env
+.env.*
+!.env.example
+node_modules
+dist
+npm-debug.log*
+backend/.venv
+backend/__pycache__
+backend/settings.json
+**/__pycache__
+**/*.py[cod]
+*.md
+LICENSE

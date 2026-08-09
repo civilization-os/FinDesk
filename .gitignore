@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+dist/
+backend/.venv/
+.reasonix/
+__pycache__/
+*.pyc
+
+# 环境与 IDE
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# 本地 AI 配置(含 API Key)
+backend/settings.json
