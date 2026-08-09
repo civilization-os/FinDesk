@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import services
+import user_data
 
 app = FastAPI(title="FinForge 行情服务", version="0.1.0")
 
@@ -31,6 +32,32 @@ def health():
 @app.get("/api/health")
 def api_health():
     return health()
+
+
+@app.get("/api/user-data")
+def api_user_data():
+    """读取单用户账户、自选股、提醒与聊天历史。"""
+    data, initialized = user_data.load_user_data()
+    return {"ok": True, "data": data, "initialized": initialized}
+
+
+@app.put("/api/user-data")
+def api_replace_user_data(body: dict):
+    """首次从旧版浏览器存储迁移，或整体恢复用户数据。"""
+    try:
+        return {"ok": True, "data": user_data.replace_user_data(body or {})}
+    except ValueError as error:
+        return {"ok": False, "error": str(error)}
+
+
+@app.put("/api/user-data/{section}")
+def api_save_user_data_section(section: str, body: dict):
+    """按分区原子更新，避免不同页面互相覆盖。"""
+    try:
+        value = (body or {}).get("value")
+        return {"ok": True, "data": user_data.save_user_data_section(section, value)}
+    except ValueError as error:
+        return {"ok": False, "error": str(error)}
 
 
 def _guard(fn, default):

@@ -27,6 +27,7 @@ export default function ProfileSettings() {
   const [profile, setProfile] = useState(loadEditableProfile)
   const [draft, setDraft] = useState(emptyTrade)
   const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
   const [pendingTrade, setPendingTrade] = useState(null)
   const summary = useMemo(() => summarizeProfile(profile), [profile])
@@ -68,18 +69,32 @@ export default function ProfileSettings() {
     setMessage('交易记录已移除，保存后生效。')
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!canSave) return
-    const saved = saveProfile(profile)
-    setProfile(saved)
-    setMessage('投资档案已保存，当前持仓、成本和税费已同步到 AI 对话。')
+    setSaving(true)
+    try {
+      const saved = await saveProfile(profile)
+      setProfile(saved)
+      setMessage('投资档案已保存到服务端，当前持仓、成本和税费已同步到 AI 对话。')
+    } catch {
+      setMessage('保存失败，请确认后端服务可用后重试。')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const clearProfile = () => {
-    const cleared = saveProfile({ ...DEFAULT_PROFILE, transactions: [], positions: [] })
-    setProfile(cleared)
-    setConfirmClear(false)
-    setMessage('投资档案已清空。')
+  const clearProfile = async () => {
+    setSaving(true)
+    try {
+      const cleared = await saveProfile({ ...DEFAULT_PROFILE, transactions: [], positions: [] })
+      setProfile(cleared)
+      setConfirmClear(false)
+      setMessage('服务端投资档案已清空。')
+    } catch {
+      setMessage('清空失败，请确认后端服务可用后重试。')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const sortedTrades = [...(profile.transactions || [])].sort((a, b) => {
@@ -94,7 +109,7 @@ export default function ProfileSettings() {
           <span className="eyebrow">INVESTOR PROFILE</span>
           <h2 id="profile-title">投资账户</h2>
         </div>
-        <span className="profile-local-badge">仅保存在本机</span>
+        <span className="profile-local-badge">服务端持久化</span>
       </div>
 
       <div className="profile-ledger trade-summary">
@@ -165,10 +180,10 @@ export default function ProfileSettings() {
       </div>
 
       {overAllocated && <p className="profile-warning">交易流水造成资金缺口 ¥ {money(Math.abs(summary.cash))}，请核对初始资金或成交记录后保存。</p>}
-      {message && <div className="set-msg ok">{message}</div>}
+      {message && <div className={`set-msg ${message.includes('失败') ? 'err' : 'ok'}`}>{message}</div>}
 
       <div className="profile-actions">
-        <button className="btn-primary" type="button" disabled={!canSave} onClick={handleSave}>保存投资档案</button>
+        <button className="btn-primary" type="button" disabled={!canSave || saving} onClick={handleSave}>{saving ? '正在保存…' : '保存投资档案'}</button>
         {summary.totalCapital > 0 && <button className="btn-ghost profile-clear" type="button" onClick={() => setConfirmClear(true)}>清空档案</button>}
         <span>{summary.positions.length ? `当前汇总 ${summary.positions.length} 只持仓 · ${money(summary.positions.reduce((sum, item) => sum + item.quantity, 0))} 股` : '保存后，AI 对话会读取交易流水与当前持仓。'}</span>
       </div>

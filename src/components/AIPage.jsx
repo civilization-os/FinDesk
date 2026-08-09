@@ -9,24 +9,20 @@ import {
   useLiveData,
 } from '../api.js'
 import { loadProfile, summarizeProfile } from '../profile.js'
+import { getUserDataSection, saveUserDataSection } from '../userData.js'
 import { IconAlert, IconBolt } from './icons.jsx'
 import WatchlistChat from './WatchlistChat.jsx'
 
 const ICONS = { up: IconBolt, down: IconAlert }
-const LOCK_KEY = 'ff-ai-watch-locks-v1'
 const MAX_ANALYSIS = 10
 
 function readLockedCodes(watchCodes) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(LOCK_KEY) || '[]')
-    const valid = Array.isArray(stored)
-      ? stored.filter((code) => watchCodes.includes(code)).slice(0, MAX_ANALYSIS)
-      : []
-    if (watchCodes.length > MAX_ANALYSIS && !valid.length) return watchCodes.slice(0, MAX_ANALYSIS)
-    return valid
-  } catch {
-    return watchCodes.length > MAX_ANALYSIS ? watchCodes.slice(0, MAX_ANALYSIS) : []
-  }
+  const stored = getUserDataSection('aiWatchLocks')
+  const valid = Array.isArray(stored)
+    ? stored.filter((code) => watchCodes.includes(code)).slice(0, MAX_ANALYSIS)
+    : []
+  if (watchCodes.length > MAX_ANALYSIS && !valid.length) return watchCodes.slice(0, MAX_ANALYSIS)
+  return valid
 }
 
 function AnalysisUniverse({ codes, quotes, lockedCodes, onToggle }) {
@@ -267,7 +263,7 @@ export default function AIPage({ watchCodes = [], onOpenStock }) {
   }, [watchKey, watchCodes])
 
   useEffect(() => {
-    localStorage.setItem(LOCK_KEY, JSON.stringify(lockedCodes))
+    void saveUserDataSection('aiWatchLocks', lockedCodes).catch(() => {})
   }, [lockedCodes])
 
   useEffect(() => {

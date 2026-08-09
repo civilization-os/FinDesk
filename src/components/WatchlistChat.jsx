@@ -234,14 +234,14 @@ export default function WatchlistChat({ result, onClose }) {
           >{busy ? <span aria-hidden="true" /> : '↑'}</button>
           <small>Enter 发送 · Shift + Enter 换行</small>
         </div>
-        <p className="chat-disclaimer">回答只基于本次锁定范围与资金档案，不扩展推荐其他股票；历史保存在当前浏览器。</p>
+        <p className="chat-disclaimer">回答只基于本次锁定范围与资金档案，不扩展推荐其他股票；历史保存在服务端。</p>
       </aside>
 
       <ConfirmDialog
         open={!!pendingDelete}
         eyebrow="DELETE RESEARCH THREAD"
         title="删除这段优选追问？"
-        description="这段对话及其绑定的优选快照将从当前浏览器永久删除，删除后无法恢复。"
+        description="这段对话及其绑定的优选快照将从服务端永久删除，删除后无法恢复。"
         confirmText="删除追问"
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}

@@ -10,7 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    FINFORGE_SETTINGS_FILE=/app/data/settings.json
+    FINFORGE_SETTINGS_FILE=/app/data/settings.json \
+    FINFORGE_USER_DATA_FILE=/app/data/user-data.json
 
 WORKDIR /app
 
@@ -22,7 +23,7 @@ RUN groupadd --system --gid 10001 finforge \
 COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
-COPY --chown=finforge:finforge app.py services.py ./
+COPY --chown=finforge:finforge app.py services.py user_data.py ./
 
 USER finforge
 

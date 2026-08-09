@@ -86,7 +86,7 @@ export default function AccountStatus({ onManage }) {
       <div className="account-primary">
         <div className="account-title-row">
           <div>
-            <span className="eyebrow">ACCOUNT STATUS · 本机账本</span>
+            <span className="eyebrow">ACCOUNT STATUS · 服务端账本</span>
             <h2 id="account-status-title">账户总览</h2>
           </div>
           <button type="button" onClick={onManage}>管理账户 <span>↗</span></button>

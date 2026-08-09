@@ -30,6 +30,10 @@ docker compose down
 `finforge-data` 中，普通的 `docker compose down` 或容器重建不会删除；只有显式执行
 `docker compose down -v` 才会一并删除该卷及其中配置。
 
+账户资金、交易流水、自选股、AI 锁定范围、提醒设置和聊天历史也统一保存在服务端
+`user-data.json`；Docker 部署时该文件与 AI 配置共用 `finforge-data` 命名卷。浏览器仅保留
+明暗主题等界面偏好。旧版本浏览器数据会在首次连接新版后端时自动迁移，迁移成功后删除旧副本。
+
 ### 直接运行 GHCR 成品镜像
 
 服务器不需要源码、Node 或 Python，只需下载仓库中的 `compose.prod.yaml`，然后执行：
@@ -133,7 +137,7 @@ npm run dev        # 打开 http://localhost:5173
 - 「近 20 日资金流柱状图」为**上证指数量能 × 涨跌方向**的近似形态
   (腾讯无历史主力资金流接口),卡片副标题已注明口径
 - 情绪分数为启发式公式,非官方指数
-- 自选股代码由前端 `localStorage` 持久化，首次打开为空；后端只查询用户明确选择的代码
+- 当前为单用户自托管模式；账户与聊天数据存放在后端，公开部署时应在入口层增加访问控制
 
 ## 项目结构
 
@@ -152,6 +156,9 @@ backend/
 
 ```
 GET /health
+GET /api/user-data         # 服务端用户数据
+PUT /api/user-data         # 首次迁移/整体恢复
+PUT /api/user-data/{section} # 分区持久化更新
 GET /api/indices          # 四大指数
 GET /api/market-status    # { curve: 分时, breadth: 涨跌家数 }
 GET /api/sentiment        # 市场情绪

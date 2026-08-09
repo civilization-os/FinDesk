@@ -1,4 +1,5 @@
-const CHAT_KEY = 'ff-watchlist-chat-v1'
+import { getUserDataSection, saveUserDataSection } from './userData.js'
+
 const MAX_THREADS = 30
 const MAX_MESSAGES = 36
 
@@ -71,17 +72,13 @@ function normalizeThread(thread) {
 }
 
 export function loadWatchChatThreads() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]')
-    return Array.isArray(stored) ? stored.slice(0, MAX_THREADS).map(normalizeThread).filter(Boolean) : []
-  } catch {
-    return []
-  }
+  const stored = getUserDataSection('watchlistChats')
+  return Array.isArray(stored) ? stored.slice(0, MAX_THREADS).map(normalizeThread).filter(Boolean) : []
 }
 
 export function saveWatchChatThreads(threads) {
   const safe = Array.isArray(threads) ? threads.slice(0, MAX_THREADS).map(normalizeThread).filter(Boolean) : []
-  localStorage.setItem(CHAT_KEY, JSON.stringify(safe))
+  void saveUserDataSection('watchlistChats', safe).catch(() => {})
   return safe
 }
 

@@ -1,15 +1,10 @@
 import { useEffect, useState } from 'react'
 import { getSettings, saveSettings, testSettings, getModels } from '../api.js'
+import { getUserDataSection, saveUserDataSection } from '../userData.js'
 import ProfileSettings from './ProfileSettings.jsx'
 
-const ALERT_KEY = 'ff-alert'
-
 function loadAlertCfg() {
-  try {
-    const s = localStorage.getItem(ALERT_KEY)
-    if (s) return { enabled: false, intervalMin: 30, ...JSON.parse(s) }
-  } catch { /* ignore */ }
-  return { enabled: false, intervalMin: 30 }
+  return { enabled: false, intervalMin: 30, ...(getUserDataSection('alerts') || {}) }
 }
 
 // 设置页:配置 DeepSeek 模型(真实模型列表来自 /models 接口),驱动 AI 分析;盘中周期提示
@@ -80,13 +75,13 @@ export default function SettingsPage() {
     }
     const c = { enabled: next, intervalMin: alertCfg.intervalMin }
     setAlertCfg(c)
-    localStorage.setItem(ALERT_KEY, JSON.stringify(c))
+    void saveUserDataSection('alerts', c).catch(() => {})
   }
 
   const setAlertInterval = (min) => {
     const c = { ...alertCfg, intervalMin: Number(min) }
     setAlertCfg(c)
-    localStorage.setItem(ALERT_KEY, JSON.stringify(c))
+    void saveUserDataSection('alerts', c).catch(() => {})
   }
 
   return (

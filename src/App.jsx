@@ -19,19 +19,13 @@ import CapitalFlow from './components/CapitalFlow.jsx'
 import SectorRank from './components/SectorRank.jsx'
 import Watchlist from './components/Watchlist.jsx'
 import AccountStatus from './components/AccountStatus.jsx'
+import { getUserDataSection, saveUserDataSection } from './userData.js'
 
 function loadWatchCodes() {
-  // 不内置默认自选:首次打开为空,由用户自己添加
-  try {
-    const s = localStorage.getItem('ff-watch')
-    if (s) {
-      const a = JSON.parse(s)
-      if (Array.isArray(a)) {
-        return [...new Set(a.filter((code) => typeof code === 'string' && /^\d{6}$/.test(code)))]
-      }
-    }
-  } catch { /* ignore */ }
-  return []
+  const stored = getUserDataSection('watchlist')
+  return Array.isArray(stored)
+    ? [...new Set(stored.filter((code) => typeof code === 'string' && /^\d{6}$/.test(code)))]
+    : []
 }
 
 export default function App() {
@@ -51,7 +45,7 @@ export default function App() {
   }, [theme])
 
   useEffect(() => {
-    localStorage.setItem('ff-watch', JSON.stringify(watchCodes))
+    void saveUserDataSection('watchlist', watchCodes).catch(() => {})
   }, [watchCodes])
 
   useEffect(() => {
@@ -67,11 +61,7 @@ export default function App() {
 
   // 盘中周期提示:按设置周期拉取最新洞察,自动弹面板 + 系统通知
   useEffect(() => {
-    let cfg = { enabled: false, intervalMin: 30 }
-    try {
-      const s = localStorage.getItem('ff-alert')
-      if (s) cfg = { ...cfg, ...JSON.parse(s) }
-    } catch { /* ignore */ }
+    const cfg = { enabled: false, intervalMin: 30, ...(getUserDataSection('alerts') || {}) }
     if (!cfg.enabled) return
 
     const fire = async () => {

@@ -1,4 +1,4 @@
-const PROFILE_KEY = 'ff-invest-profile-v1'
+import { getUserDataSection, saveUserDataSection } from './userData.js'
 
 export const DEFAULT_PROFILE = Object.freeze({
   version: 2,
@@ -123,18 +123,13 @@ export function normalizeProfile(value) {
 }
 
 export function loadProfile() {
-  try {
-    const stored = localStorage.getItem(PROFILE_KEY)
-    return stored ? normalizeProfile(JSON.parse(stored)) : { ...DEFAULT_PROFILE, transactions: [], positions: [] }
-  } catch {
-    return { ...DEFAULT_PROFILE, transactions: [], positions: [] }
-  }
+  return normalizeProfile(getUserDataSection('profile'))
 }
 
-export function saveProfile(profile) {
+export async function saveProfile(profile) {
   const next = normalizeProfile({ ...profile, updatedAt: new Date().toISOString() })
   next.updatedAt = new Date().toISOString()
-  localStorage.setItem(PROFILE_KEY, JSON.stringify(next))
+  await saveUserDataSection('profile', next)
   window.dispatchEvent(new CustomEvent('ff-profile-updated', { detail: next }))
   return next
 }

@@ -220,7 +220,7 @@ export default function StockChat({ code, name, onClose }) {
         open={!!pendingDelete}
         eyebrow="DELETE CONVERSATION"
         title="删除这段对话？"
-        description="这段持仓分析历史将从当前浏览器永久删除，删除后无法恢复。"
+        description="这段持仓分析历史将从服务端永久删除，删除后无法恢复。"
         confirmText="删除对话"
         onConfirm={() => deleteThread(pendingDelete)}
         onCancel={() => setPendingDelete(null)}

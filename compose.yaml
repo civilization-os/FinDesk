@@ -10,6 +10,7 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       FINFORGE_SETTINGS_FILE: /app/data/settings.json
+      FINFORGE_USER_DATA_FILE: /app/data/user-data.json
     volumes:
       - finforge-data:/app/data
     healthcheck:
