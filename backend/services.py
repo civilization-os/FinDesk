@@ -1215,7 +1215,10 @@ def _minimum_buy_shares(code):
 
 def _stock_chat_intent(question):
     text = "".join(str(question or "").lower().split())
-    if any(word in text for word in ("月k", "月线", "月度", "连跌", "几个月", "一年多")):
+    if any(word in text for word in (
+        "月k", "月线", "月度", "连跌", "几个月", "一年多",
+        "连续下跌", "一直下跌", "一路下跌", "下跌为0个月",
+    )):
         return "monthly"
     if any(word in text for word in ("长期", "长线", "观察区", "买入点", "布局点")):
         return "long_term"
@@ -1289,6 +1292,18 @@ def _monthly_chat_answer(q, monthly):
     else:
         current_note = "以上只按已完成月 K 收盘价统计。"
     return "\n\n".join((conclusion, strict_count, ma_note + " " + current_note))
+
+
+def _trim_chat_answer(value, limit=700):
+    """限制聊天答案长度，并优先在完整句子处结束，避免硬截出半句话。"""
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    clipped = text[:limit]
+    boundary = max(clipped.rfind("。"), clipped.rfind("！"), clipped.rfind("？"), clipped.rfind("\n"))
+    if boundary >= int(limit * 0.55):
+        return clipped[:boundary + 1].rstrip()
+    return clipped.rstrip("，；、 ") + "。"
 
 
 def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, monthly=None):
@@ -1552,7 +1567,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
             history.append({"role": item["role"], "content": content})
     user_question = str(question or "").strip()[:1000]
     raw = _call_deepseek([{"role": "system", "content": system}, *history, {"role": "user", "content": user_question}], timeout=45)
-    answer = raw.strip()[:2400] if raw else _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday, monthly)
+    answer = _trim_chat_answer(raw) if raw else _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday, monthly)
     return {
         "message": answer,
         "source": "deepseek" if raw else "rule",
