@@ -36,6 +36,7 @@ export default function WatchlistChat({ result, onClose }) {
   const profileSummary = useMemo(() => summarizeProfile(profile), [profile])
   const priorityCount = items.filter((item) => item.label === '优先关注').length
   const blockedCount = items.filter((item) => item.allocation_blocked).length
+  const cautionCount = items.filter((item) => item.allocation_caution && !item.allocation_blocked).length
 
   useEffect(() => {
     const handleProfile = (event) => setProfile(event.detail || loadProfile())
@@ -140,7 +141,8 @@ export default function WatchlistChat({ result, onClose }) {
   const quickPrompts = [
     '为什么这样排序？',
     '结合我的资金，优先看哪只？',
-    blockedCount ? '哪些股票被资金约束了？' : '这批股票最大的共同风险是什么？',
+    '哪只更接近长期技术观察区？',
+    blockedCount ? '哪些股票当前资金买不起？' : cautionCount ? '集中度偏高时如何取舍？' : '这批股票最大的共同风险是什么？',
   ]
 
   return (
@@ -162,6 +164,7 @@ export default function WatchlistChat({ result, onClose }) {
           <span className="ready">分析范围 {items.length}/10</span>
           <span className="ready">{analysis.horizon_label || '波段（中线）'}口径</span>
           <span>{priorityCount} 只优先关注</span>
+          {cautionCount ? <span>{cautionCount} 只集中度提醒</span> : null}
           <span className={profileSummary.totalCapital ? 'ready' : ''}>{profileSummary.totalCapital ? `可用 ¥${profileSummary.cash.toLocaleString('zh-CN')}` : '未设置初始资金'}</span>
         </div>
 

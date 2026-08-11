@@ -75,7 +75,7 @@ function AnalysisUniverse({ codes, quotes, lockedCodes, onToggle }) {
 function getAnalysisFeatureTags(item, horizonLabel) {
   const dimensions = new Map((item.dimensions || []).map((dimension) => [dimension.key, Number(dimension.score)]))
   const allocationMatch = String(item.allocation_note || '').match(/占初始资金\s*([\d.]+)%/)
-  const allocationPct = allocationMatch?.[1]
+  const allocationPct = Number(item.minimum_lot_weight) || allocationMatch?.[1]
   const trend = dimensions.get('trend')
   const momentum = dimensions.get('momentum')
   const volume = dimensions.get('volume')
@@ -83,10 +83,17 @@ function getAnalysisFeatureTags(item, horizonLabel) {
 
   const tags = [{ label: horizonLabel, tone: 'horizon' }, {
     label: item.allocation_blocked
-      ? (allocationPct ? `仓位超限 ${allocationPct}%` : '资金受限')
-      : (allocationPct ? `仓位 ${allocationPct}%` : '资金适配'),
-    tone: item.allocation_blocked ? 'risk' : 'fit',
+      ? '最低申报资金不足'
+      : item.allocation_caution
+        ? (allocationPct ? `集中度 ${allocationPct}%` : '集中度偏高')
+        : (allocationPct ? `一手占比 ${allocationPct}%` : '资金可执行'),
+    tone: item.allocation_blocked ? 'risk' : item.allocation_caution ? 'caution' : 'fit',
   }]
+
+  const zone = item.long_term_zone
+  if (zone?.lower && zone?.upper) {
+    tags.push({ label: `长期区 ${Number(zone.lower).toFixed(2)}–${Number(zone.upper).toFixed(2)}`, tone: 'long-term' })
+  }
 
   if (Number.isFinite(trend)) {
     tags.push(trend >= 65
@@ -126,14 +133,15 @@ function AnalysisResults({ result, onOpenStock, onOpenChat }) {
   const lead = items[0]
   const priorityItems = items.filter((item) => item.label === '优先关注')
   const blockedItems = items.filter((item) => item.allocation_blocked)
-  const eligibleCount = items.length - blockedItems.length
+  const cautionItems = items.filter((item) => item.allocation_caution && !item.allocation_blocked)
+  const executableCount = items.length - blockedItems.length
   const hasPriority = priorityItems.length > 0
   const horizonLabel = result.horizon_label || '波段（中线）'
   const focusTitle = hasPriority
     ? `${priorityItems.map((item) => item.name).slice(0, 3).join('、')}进入优先关注`
     : '当前没有满足条件的优先标的'
   const focusCopy = hasPriority
-    ? `按${horizonLabel}口径，范围内相对领先的是 ${lead.name}，匹配度 ${lead.score}；先验证关注条件，再考虑资金配置。`
+    ? `按${horizonLabel}口径，范围内相对领先的是 ${lead.name}，匹配度 ${lead.score}；小资金先看最低申报数量，比例超出参考线只提示集中度，不机械淘汰。`
     : `按${horizonLabel}口径，相对领先的是 ${lead.name}，匹配度 ${lead.score}，但结论仍为“${lead.label}”；当前更适合等待信号，而不是从低分项中勉强选择。`
   return (
     <section className="analysis-results" aria-live="polite">
@@ -159,6 +167,13 @@ function AnalysisResults({ result, onOpenStock, onOpenChat }) {
             <b>{lead.name}</b>
             <p>{lead.trigger}</p>
           </div>
+          {lead.long_term_zone?.lower && lead.long_term_zone?.upper ? (
+            <div className="analysis-lead-long-zone">
+              <span>长期技术观察区</span>
+              <strong>{Number(lead.long_term_zone.lower).toFixed(2)}–{Number(lead.long_term_zone.upper).toFixed(2)}</strong>
+              <p>{lead.long_term_zone.label} · {lead.long_term_zone.note}</p>
+            </div>
+          ) : null}
         </div>
         <div className="analysis-focus-metrics">
           <div className="lead-metric">
@@ -167,14 +182,18 @@ function AnalysisResults({ result, onOpenStock, onOpenChat }) {
             <small>匹配度 <b>{lead.score}</b> · {lead.label}</small>
           </div>
           <div>
-            <span>资金可适配</span>
-            <strong>{eligibleCount}<small> / {items.length}</small></strong>
-            <small>未触发硬性仓位约束</small>
+            <span>最低申报可执行</span>
+            <strong>{executableCount}<small> / {items.length}</small></strong>
+            <small>按当前可用资金计算</small>
           </div>
-          <div className={blockedItems.length ? 'risk-metric' : ''}>
-            <span>资金受限</span>
-            <strong>{blockedItems.length}<small> 只</small></strong>
-            <small>{blockedItems.length ? blockedItems.slice(0, 3).map((item) => item.name).join('、') : '当前没有硬性约束'}</small>
+          <div className={blockedItems.length ? 'risk-metric' : cautionItems.length ? 'caution-metric' : ''}>
+            <span>{blockedItems.length ? '暂不可执行' : '集中度提醒'}</span>
+            <strong>{blockedItems.length || cautionItems.length}<small> 只</small></strong>
+            <small>{blockedItems.length
+              ? blockedItems.slice(0, 3).map((item) => item.name).join('、')
+              : cautionItems.length
+                ? '比例仅作柔性参考'
+                : '当前资金匹配自然'}</small>
           </div>
         </div>
       </div>
@@ -207,13 +226,19 @@ function AnalysisResults({ result, onOpenStock, onOpenChat }) {
                 {featureTags.map((tag) => <span className={tag.tone} key={tag.label}>{tag.label}</span>)}
               </div>
               <p>{item.reason}</p>
-              <small className={item.allocation_blocked ? 'blocked' : ''}>
-                {item.allocation_blocked ? '资金限制 · ' : '资金适配 · '}{item.allocation_note}
+              <small className={item.allocation_blocked ? 'blocked' : item.allocation_caution ? 'caution' : ''}>
+                {item.allocation_blocked ? '暂不可执行 · ' : item.allocation_caution ? '柔性提醒 · ' : '资金可执行 · '}{item.execution_note || item.allocation_note}
               </small>
             </div>
             <div className="analysis-conditions">
-              <div><span>关注条件</span><p>{item.trigger}</p></div>
-              <div><span>风险 / 失效</span><p>{item.risk}；{item.invalidation}</p></div>
+              <div><span>{horizonLabel}关注条件</span><p>{item.trigger}</p></div>
+              <div className="analysis-long-condition">
+                <span>长期技术观察区</span>
+                {item.long_term_zone?.lower && item.long_term_zone?.upper
+                  ? <><b>{Number(item.long_term_zone.lower).toFixed(2)}–{Number(item.long_term_zone.upper).toFixed(2)}</b><p>{item.long_term_zone.label}；{item.long_term_zone.confirmation}</p></>
+                  : <p>长期区间数据暂不完整</p>}
+              </div>
+              <div><span>风险 / 失效</span><p>{item.risk}；{item.long_term_zone?.invalidation || item.invalidation}</p></div>
             </div>
           </article>
           )

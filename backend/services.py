@@ -1414,24 +1414,38 @@ def _watchlist_rule_items(snapshots, safe_profile):
         lot_amount = round(q["price"] * lot_size, 2)
         lot_weight = lot_amount / total * 100 if total else None
         allocation_blocked = False
+        allocation_caution = False
+        allocation_status = "unknown"
 
         if position and holding_weight > risk_cap:
-            score -= min(22, 8 + (holding_weight - risk_cap) * 0.45)
-            allocation_blocked = True
-            allocation_note = f"已持仓占初始资金 {holding_weight:.1f}%，高于 {risk_cap}% 单股参考线"
+            score -= min(10, 2 + (holding_weight - risk_cap) * 0.20)
+            allocation_caution = True
+            allocation_status = "holding_concentrated"
+            allocation_note = (
+                f"已持仓占初始资金 {holding_weight:.1f}%，高于 {risk_cap}% 柔性参考线；"
+                "不影响技术排序，但不宜仅因排名靠前继续集中"
+            )
         elif not total:
+            allocation_status = "unknown"
             allocation_note = f"{lot_size} 股约需 {lot_amount:,.0f} 元；未配置初始资金，暂不判断仓位适配"
         elif lot_amount > available and not position:
             score -= 22
             allocation_blocked = True
+            allocation_status = "unaffordable"
             allocation_note = f"最低 {lot_size} 股约需 {lot_amount:,.0f} 元，高于可用资金 {available:,.0f} 元"
         elif lot_weight is not None and lot_weight > risk_cap and not position:
-            score -= min(24, 8 + (lot_weight - risk_cap) * 0.55)
-            allocation_blocked = True
-            allocation_note = f"最低 {lot_size} 股占初始资金 {lot_weight:.1f}%，高于 {risk_cap}% 单股参考线"
+            score -= min(10, 2 + (lot_weight - risk_cap) * 0.18)
+            allocation_caution = True
+            allocation_status = "concentrated"
+            allocation_note = (
+                f"最低 {lot_size} 股约需 {lot_amount:,.0f} 元，占初始资金 {lot_weight:.1f}%；"
+                f"高于 {risk_cap}% 柔性参考线，但资金可执行"
+            )
         elif position:
-            allocation_note = f"已持仓占初始资金 {holding_weight:.1f}%，处于 {risk_cap}% 单股参考线内"
+            allocation_status = "holding_fit"
+            allocation_note = f"已持仓占初始资金 {holding_weight:.1f}%，处于 {risk_cap}% 柔性参考线内"
         else:
+            allocation_status = "fit"
             allocation_note = f"最低 {lot_size} 股约需 {lot_amount:,.0f} 元，占初始资金 {lot_weight:.1f}%"
 
         score = _clamp_score(score)
@@ -1475,6 +1489,23 @@ def _watchlist_rule_items(snapshots, safe_profile):
             trigger = f"先重新站上 {sig.get('ma20') or resistance:.2f}，并观察量能是否同步改善"
             invalidation = f"收盘有效跌破 {support:.2f}，或突破 {resistance:.2f} 后放量回落"
 
+        long_term_zone = _long_term_zone(q, sig, support)
+        if allocation_blocked:
+            execution_note = "当前只作技术观察；可用资金不足最低申报数量，暂不具备实际买入条件。"
+        elif not total:
+            execution_note = "先配置初始资金，再结合最低申报数量判断实际占比。"
+        elif position:
+            execution_note = (
+                f"当前已有仓位；{allocation_note}。如需调整，应先核对交易账本与长期观察区。"
+            )
+        elif allocation_caution:
+            execution_note = (
+                f"可执行最低 {lot_size} 股，但单笔占比 {lot_weight:.1f}% 偏高；"
+                "比例仅作集中度提醒，不否决技术机会。"
+            )
+        else:
+            execution_note = f"可执行最低 {lot_size} 股，预计占初始资金 {lot_weight:.1f}%，仍需预留交易费用。"
+
         items.append({
             "code": q["code"], "name": q["name"], "price": q["price"],
             "change_pct": q["change_pct"], "score": score,
@@ -1483,8 +1514,14 @@ def _watchlist_rule_items(snapshots, safe_profile):
             "invalidation": invalidation,
             "support": support, "resistance": resistance,
             "allocation_blocked": allocation_blocked,
+            "allocation_caution": allocation_caution,
+            "allocation_status": allocation_status,
             "allocation_note": allocation_note,
+            "allocation_reference_pct": risk_cap,
             "minimum_shares": lot_size, "minimum_lot_value": lot_amount,
+            "minimum_lot_weight": round(lot_weight, 1) if lot_weight is not None else None,
+            "execution_note": execution_note,
+            "long_term_zone": long_term_zone,
             "holding": bool(position), "holding_weight": round(holding_weight, 1),
             "horizon": horizon, "horizon_label": style["label"],
             "style_scope": style_scope,
@@ -1509,7 +1546,15 @@ def _ai_watchlist_analysis(items, safe_profile):
         "code": item["code"], "name": item["name"], "price": item["price"],
         "change_pct": item["change_pct"], "rule_score": item["score"],
         "rule_label": item["label"], "allocation_blocked": item["allocation_blocked"],
-        "allocation_note": item["allocation_note"], "reason": item["reason"],
+        "allocation_caution": item["allocation_caution"],
+        "allocation_status": item["allocation_status"],
+        "allocation_note": item["allocation_note"],
+        "minimum_shares": item["minimum_shares"],
+        "minimum_lot_value": item["minimum_lot_value"],
+        "minimum_lot_weight": item["minimum_lot_weight"],
+        "execution_note": item["execution_note"],
+        "long_term_zone": item["long_term_zone"],
+        "reason": item["reason"],
         "risk": item["risk"], "trigger": item["trigger"],
         "invalidation": item["invalidation"], "horizon": item["horizon"],
     } for item in items]
@@ -1527,7 +1572,10 @@ def _ai_watchlist_analysis(items, safe_profile):
         "综合规则评分、资金适配、趋势和风险重新排序，并为每只股票输出 code、label、reason、risk、trigger、invalidation。"
         "必须严格按 investor.horizon 使用对应口径：短线重动量与量能，波段重20日趋势与回撤，"
         "中长线重60日趋势与回撤；中长线数据不含完整基本面，不得表述为长期投资价值。"
-        "label 只能是优先关注/继续观察/暂时回避；allocation_blocked=true 时不得标为优先关注。"
+        "资金比例是柔性集中度参考，不是机械淘汰条件：allocation_caution=true 仍可按技术条件进入优先关注；"
+        "只有 allocation_blocked=true（可用资金不足最低申报数量）时不得标为优先关注。"
+        "long_term_zone 是程序计算的中长线技术观察区，只能用于说明等待、确认与失效条件，不得改写数字或包装成确定买点。"
+        "label 只能是优先关注/继续观察/暂时回避。"
         "reason/risk/trigger/invalidation 各不超过 45 字，必须使用已有数字，不得编造财报、新闻或目标价。"
         "优先关注表示研究优先级，不是确定性买入指令。只输出 JSON 数组。\n\n可信上下文："
         + json.dumps(context, ensure_ascii=False)
@@ -1583,6 +1631,7 @@ def get_watchlist_analysis(codes, profile=None):
     items = ai_items or rule_items
     priority_count = sum(1 for item in items if item["label"] == "优先关注")
     blocked_count = sum(1 for item in items if item["allocation_blocked"])
+    caution_count = sum(1 for item in items if item.get("allocation_caution"))
     horizon = safe_profile.get("horizon") or "波段"
     horizon_label = {"短线": "短线", "波段": "波段（中线）", "中长线": "中长线技术面"}[horizon]
     style_scope = {
@@ -1592,7 +1641,7 @@ def get_watchlist_analysis(codes, profile=None):
     }[horizon]
     summary = (
         f"按{horizon_label}口径比较 {len(items)} 只自选股，{priority_count} 只进入优先关注，"
-        f"{blocked_count} 只受到可用资金或单股仓位约束。"
+        f"{blocked_count} 只因最低申报金额暂不可执行，{caution_count} 只触发集中度柔性提醒。"
     )
     return {
         "generated_at": time.strftime("%m-%d %H:%M"),
@@ -1604,7 +1653,11 @@ def get_watchlist_analysis(codes, profile=None):
         "style_scope": style_scope,
         "summary": summary,
         "items": items,
-        "scope": "仅比较本次锁定的自选股；使用实时行情、前复权日 K、技术指标与资金账本，不含完整财报、公告、新闻和全市场横向筛选。",
+        "scope": (
+            "仅比较本次锁定的自选股；使用实时行情、前复权日 K、技术指标与资金账本。"
+            "仓位比例是柔性集中度参考，只有可用资金不足最低申报数量才视为不可执行；"
+            "长期区间仅为技术观察参考，不含完整财报、公告、新闻、行业景气和全市场横向筛选。"
+        ),
     }
 
 def _safe_watchlist_analysis(value):
@@ -1627,6 +1680,19 @@ def _safe_watchlist_analysis(value):
         label = str(item.get("label") or "继续观察").strip()
         if label not in {"优先关注", "继续观察", "暂时回避"}:
             label = "继续观察"
+        raw_zone = item.get("long_term_zone") if isinstance(item.get("long_term_zone"), dict) else {}
+        zone_lower = round(max(0, _num(raw_zone.get("lower")) or 0), 2)
+        zone_upper = round(max(zone_lower, _num(raw_zone.get("upper")) or 0), 2)
+        long_term_zone = {
+            "label": _clean(raw_zone.get("label"))[:24],
+            "lower": zone_lower,
+            "upper": zone_upper,
+            "basis": _clean(raw_zone.get("basis"))[:160],
+            "confirmation": _clean(raw_zone.get("confirmation"))[:220],
+            "invalidation": _clean(raw_zone.get("invalidation"))[:180],
+            "note": _clean(raw_zone.get("note"))[:140],
+            "scope": _clean(raw_zone.get("scope"))[:220],
+        }
         items.append({
             "rank": len(items) + 1,
             "code": code,
@@ -1641,10 +1707,16 @@ def _safe_watchlist_analysis(value):
             "invalidation": _clean(item.get("invalidation"))[:120],
             "allocation_note": _clean(item.get("allocation_note"))[:120],
             "allocation_blocked": bool(item.get("allocation_blocked")),
+            "allocation_caution": bool(item.get("allocation_caution")),
+            "allocation_status": _clean(item.get("allocation_status"))[:24],
+            "allocation_reference_pct": round(max(0, _num(item.get("allocation_reference_pct")) or 0), 1),
             "holding": bool(item.get("holding")),
             "holding_weight": round(max(0, _num(item.get("holding_weight")) or 0), 1),
             "minimum_shares": max(0, int(_num(item.get("minimum_shares")) or 0)),
             "minimum_lot_value": round(max(0, _num(item.get("minimum_lot_value")) or 0), 2),
+            "minimum_lot_weight": round(max(0, _num(item.get("minimum_lot_weight")) or 0), 1),
+            "execution_note": _clean(item.get("execution_note"))[:220],
+            "long_term_zone": long_term_zone,
             "horizon": horizon,
             "horizon_label": horizon_label,
         })
@@ -1672,10 +1744,17 @@ def _rule_watchlist_chat(question, analysis, safe_profile):
     horizon_label = analysis.get("horizon_label") or "波段（中线）"
 
     if target:
+        zone = target.get("long_term_zone") or {}
+        zone_text = (
+            f"长期技术观察区：{zone.get('lower'):.2f}–{zone.get('upper'):.2f}；"
+            f"确认条件：{zone.get('confirmation')}"
+            if zone.get("lower") and zone.get("upper") else "长期技术观察区数据暂不完整。"
+        )
         return "\n\n".join([
             f"结论：按{horizon_label}口径，{target['name']}在本次 {len(items)} 只自选股中排第 {target['rank']}，当前结论为“{target['label']}”。",
             f"主要依据：{target['reason']}；资金适配：{target['allocation_note']}。",
-            f"关注条件：{target['trigger']}。失效与风险：{target['risk']}；{target['invalidation']}。",
+            f"执行参考：{target.get('execution_note') or target['allocation_note']}。",
+            f"{zone_text}。失效与风险：{target['risk']}；{target['invalidation']}。",
         ])
 
     if any(word in q for word in ("仓位", "资金", "配置", "买多少", "怎么买")):
@@ -1684,9 +1763,9 @@ def _rule_watchlist_chat(question, analysis, safe_profile):
         base = f"结论：当前初始资金 {total:,.0f} 元、可用资金 {available:,.0f} 元，"
         if blocked:
             names = "、".join(item["name"] for item in blocked[:4])
-            base += f"{names}受到最低买入金额或单股集中度约束，不宜仅因排名靠前就直接配置。"
+            base += f"{names}的可用资金不足最低申报数量，当前不可执行。"
         else:
-            base += "本次候选未触发硬性资金约束，但仍应按关注条件逐只验证。"
+            base += "本次候选均满足最低申报金额；超过风险比例只提示集中度，不会机械淘汰。"
         details = "；".join(f"{item['name']}：{item['allocation_note']}" for item in items[:4])
         return base + "\n\n" + details + "。"
 
@@ -1721,6 +1800,9 @@ def get_watchlist_chat(question, analysis=None, messages=None, profile=None):
         "如果用户问哪只更值得关注，可以给出明确的范围内相对结论，但必须说明这是研究优先级而非确定性买入指令。"
         "所有结论必须沿用 analysis_snapshot.horizon_label 的周期口径，不得混用短线、波段和中长线逻辑。"
         "若为中长线技术面口径，必须说明当前不含完整财报、行业景气与估值分位，不能下长期价值判断。"
+        "仓位参考比例是柔性集中度提醒，不得把 allocation_caution 说成绝对不能买；"
+        "只有 allocation_blocked=true 才代表可用资金不足最低申报数量。"
+        "用户询问长期位置时，必须引用 long_term_zone 的区间、确认条件和失效条件，说明这是技术观察区而非确定买点。"
         "涉及买入数量时遵守上下文中的最低股数和资金约束；未持仓不得使用减仓或继续持有措辞。"
         "若问题需要财报、公告、新闻或全市场数据，明确说明当前快照不包含这些资料。"
         "回答使用简洁中文，控制在 450 字内。以下是可信上下文：\n"
