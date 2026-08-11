@@ -125,8 +125,8 @@ export default function StockChat({ code, name, onClose }) {
   }
 
   const quickPrompts = position?.amount
-    ? ['当前仓位是否过重？', '结合成本价，我该关注哪些风险？', '如果跌破支撑位，仓位怎么评估？']
-    : ['这只股票适合我的资金配置吗？', '如果考虑买入，需要等待什么条件？', '长期技术观察区在哪里？']
+    ? ['月 K 的下跌持续多久了？', '当前仓位是否过重？', '结合成本价，我该关注哪些风险？']
+    : ['月 K 的下跌持续多久了？', '这只股票适合我的资金配置吗？', '长期技术观察区在哪里？']
 
   return (
     <aside className="stock-chat" aria-label={`${name} AI 持仓对话`} onClick={(event) => event.stopPropagation()}>
@@ -179,10 +179,10 @@ export default function StockChat({ code, name, onClose }) {
           <div className={`chat-message ${message.role}`} key={message.id}>
             <div className="chat-message-meta"><span>{message.role === 'user' ? '你' : 'FinForge AI'}</span><time>{timeLabel(message.time)}</time></div>
             <p>{message.content}</p>
-            {message.role === 'assistant' && <small>{message.source === 'deepseek' ? 'DeepSeek · 结合当前档案' : '量化规则 · 模型未启用或暂不可用'}</small>}
+            {message.role === 'assistant' && <small>{message.source === 'deepseek' ? 'DeepSeek · 按当前问题回答' : '行情规则 · 按当前问题回答'}</small>}
           </div>
         ))}
-        {busy && <div className="chat-thinking"><span /><span /><span /><em>正在结合仓位与行情分析 · 可随时停止</em></div>}
+        {busy && <div className="chat-thinking"><span /><span /><span /><em>正在理解问题并读取相关行情 · 可随时停止</em></div>}
         {interrupted && !busy && <div className="chat-interrupted"><i />已停止生成，可继续追问</div>}
         <div ref={messageEndRef} />
       </div>
@@ -199,7 +199,7 @@ export default function StockChat({ code, name, onClose }) {
           rows={2}
           value={input}
           maxLength={1000}
-          placeholder={`问问 ${name} 的仓位、成本或风险…`}
+          placeholder={`问问 ${name} 的月 K、趋势、仓位或风险…`}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {

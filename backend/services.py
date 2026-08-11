@@ -880,6 +880,98 @@ def _long_term_zone(q, sig, support):
         "scope": "仅是技术面分批观察提示；缺少盈利预测、行业景气、现金流和估值分位，不能视为长期价值买点。",
     }
 
+
+def _monthly_trend_context(kline_month, clock=None):
+    """把月 K 压缩成可直接回答“连跌多久/是否跌了一年”的事实数据。"""
+    bars = []
+    for item in kline_month if isinstance(kline_month, list) else []:
+        if not isinstance(item, dict):
+            continue
+        close = _num(item.get("close"))
+        date = str(item.get("date") or "")[:10]
+        if close and date:
+            bars.append({"date": date, "month": date[:7], "close": round(close, 2)})
+    if len(bars) < 2:
+        return {"available": False, "note": "月 K 数据不足，无法计算连续涨跌月份。"}
+
+    now_month = datetime.now(_SHANGHAI_TZ).strftime("%Y-%m")
+    current_month_incomplete = bars[-1]["month"] == now_month
+    completed = bars[:-1] if current_month_incomplete else bars
+    if len(completed) < 2:
+        return {"available": False, "note": "已完成月 K 数量不足，无法计算连续涨跌月份。"}
+
+    changes = []
+    for previous, current in zip(completed, completed[1:]):
+        pct = (current["close"] / previous["close"] - 1) * 100 if previous["close"] else 0
+        changes.append({**current, "change_pct": round(pct, 2)})
+
+    consecutive_down = 0
+    for item in reversed(changes):
+        if item["change_pct"] < 0:
+            consecutive_down += 1
+        else:
+            break
+
+    longest_down = 0
+    current_streak = 0
+    streak_start = streak_end = None
+    current_start = None
+    for item in changes[-24:]:
+        if item["change_pct"] < 0:
+            current_streak += 1
+            current_start = current_start or item["month"]
+            if current_streak > longest_down:
+                longest_down = current_streak
+                streak_start, streak_end = current_start, item["month"]
+        else:
+            current_streak = 0
+            current_start = None
+
+    window = completed[-18:]
+    peak_index = max(range(len(window)), key=lambda index: window[index]["close"])
+    peak = window[peak_index]
+    latest = completed[-1]
+    peak_to_latest_pct = round((latest["close"] / peak["close"] - 1) * 100, 2) if peak["close"] else None
+
+    def month_number(value):
+        year, month = value.split("-")
+        return int(year) * 12 + int(month)
+
+    months_since_peak = max(0, month_number(latest["month"]) - month_number(peak["month"]))
+    trailing_12_pct = None
+    if len(completed) >= 13:
+        base = completed[-13]["close"]
+        trailing_12_pct = round((latest["close"] / base - 1) * 100, 2) if base else None
+
+    current_month = None
+    if current_month_incomplete:
+        current = bars[-1]
+        current_month = {
+            **current,
+            "change_pct": round((current["close"] / latest["close"] - 1) * 100, 2) if latest["close"] else None,
+            "incomplete": True,
+        }
+
+    return {
+        "available": True,
+        "latest_completed_month": latest["month"],
+        "latest_completed_close": latest["close"],
+        "latest_completed_change_pct": changes[-1]["change_pct"],
+        "consecutive_down_months": consecutive_down,
+        "longest_down_months_recent": longest_down,
+        "longest_down_start": streak_start,
+        "longest_down_end": streak_end,
+        "peak_month": peak["month"],
+        "peak_close": peak["close"],
+        "months_since_peak": months_since_peak,
+        "peak_to_latest_pct": peak_to_latest_pct,
+        "trailing_12m_pct": trailing_12_pct,
+        "current_month": current_month,
+        "recent_completed": changes[-8:],
+        "definition": "连续下跌按相邻两个已完成月 K 的收盘价逐月下降计算；本月未收盘时单独列示，不计入连续月份。",
+    }
+
+
 def get_stock_ai(code, profile=None):
     """个股 AI 建议:DeepSeek 生成,失败降级规则引擎。返回含 generated_at。"""
     st = get_stock(code)
@@ -1101,8 +1193,77 @@ def _minimum_buy_shares(code):
     return 200 if str(code or "").startswith(("688", "689")) else 100
 
 
-def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None):
-    """模型不可用时仍返回与持仓、集中度和关键价位相关的分析。"""
+def _stock_chat_intent(question):
+    text = "".join(str(question or "").lower().split())
+    if any(word in text for word in ("月k", "月线", "月度", "连跌", "几个月", "一年多")):
+        return "monthly"
+    if any(word in text for word in ("长期", "长线", "观察区", "买入点", "布局点")):
+        return "long_term"
+    if any(word in text for word in ("盘中", "分时", "均价", "今天", "今日", "开盘", "收盘")):
+        return "intraday"
+    if any(word in text for word in ("仓位", "资金", "成本", "买多少", "能买吗", "适合", "配置", "一手")):
+        return "allocation"
+    if any(word in text for word in ("全面", "综合", "整体", "详细分析", "完整分析")):
+        return "overview"
+    return "technical"
+
+
+def _display_month(value):
+    try:
+        year, month = str(value).split("-")
+        return f"{int(year)}年{int(month)}月"
+    except Exception:
+        return str(value or "—")
+
+
+def _monthly_chat_answer(q, monthly):
+    if not monthly.get("available"):
+        return f"目前还不能准确回答 {q['name']} 连跌了几个月：{monthly.get('note') or '月 K 数据不足'}"
+
+    consecutive = monthly["consecutive_down_months"]
+    latest_month = _display_month(monthly["latest_completed_month"])
+    latest_change = monthly["latest_completed_change_pct"]
+    if consecutive:
+        conclusion = (
+            f"按已完成月 K 计算，{q['name']}截至{latest_month}连续下跌 {consecutive} 个月，"
+            f"最近一个完整月收盘变动 {latest_change:+.2f}%。"
+        )
+    else:
+        conclusion = (
+            f"不是连续跌了一年多。按已完成月 K 计算，{q['name']}当前连续下跌为 0 个月；"
+            f"最近一个完整月是{latest_month}，收盘较前月 {latest_change:+.2f}%。"
+        )
+
+    peak_month = _display_month(monthly["peak_month"])
+    span = monthly["months_since_peak"]
+    drawdown = monthly.get("peak_to_latest_pct")
+    longest = monthly.get("longest_down_months_recent") or 0
+    if longest:
+        streak = (
+            f"近两年最长连跌是 {longest} 个月"
+            f"（{_display_month(monthly.get('longest_down_start'))}至{_display_month(monthly.get('longest_down_end'))}）"
+        )
+    else:
+        streak = "近两年没有形成连续月线收跌"
+    structure = (
+        f"你看到的更接近“中期回撤持续较久”：从{peak_month}月收盘高点 {monthly['peak_close']:.2f} "
+        f"到{latest_month} {monthly['latest_completed_close']:.2f}，历时约 {span} 个月、累计 {drawdown:+.2f}%；"
+        f"但中间有反弹月，{streak}。"
+    )
+
+    current = monthly.get("current_month")
+    if current:
+        current_note = (
+            f"本月截至 {current['date']} 暂报 {current['close']:.2f}，较上月收盘 {current['change_pct']:+.2f}%；"
+            "月 K 尚未收完，不计入连续涨跌结论。"
+        )
+    else:
+        current_note = "以上只按已完成月 K 收盘价统计。"
+    return "\n\n".join((conclusion, structure, current_note))
+
+
+def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, monthly=None):
+    """模型不可用时按问题意图作答，避免无关的整套模板倾倒。"""
     framework = _rule_stock_ai(q, tech)
     position = profile.get("current_position")
     total = profile.get("total_capital") or 0
@@ -1121,6 +1282,80 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None):
     horizon_label = {"短线": "短线", "波段": "波段（中线）", "中长线": "中长线技术面"}[horizon]
     clock = clock or _market_clock()
     intraday = intraday or {}
+    monthly = monthly or {"available": False, "note": "月 K 数据不足。"}
+    intent = _stock_chat_intent(question)
+
+    if intent == "monthly":
+        return _monthly_chat_answer(q, monthly)
+
+    if intent == "long_term":
+        zone = _long_term_zone(q, tech, framework["support"])
+        return "\n\n".join((
+            f"{q['name']}当前的长期技术观察区是 {zone['lower']:.2f}–{zone['upper']:.2f}，状态为“{zone['label']}”。",
+            f"确认条件：{zone['confirmation']}",
+            f"失效条件：{zone['invalidation']} {zone['scope']}",
+        ))
+
+    if intent == "intraday":
+        detail = f"当前是{clock['label']}（{clock['time']}），现价 {q['price']:.2f}，今日 {q['change_pct']:+.2f}%。"
+        if intraday.get("average_price"):
+            detail += (
+                f"现价较分时均价 {intraday.get('vs_average_pct'):+.2f}%，"
+                f"近15分钟动量 {intraday.get('momentum_15m_pct'):+.2f}%。"
+            )
+        return "\n\n".join((detail, clock["strategy_focus"], f"参考支撑 {framework['support']:.2f}、压力 {framework['resistance']:.2f}。"))
+
+    if intent == "allocation":
+        if position and stock_amount:
+            concentration = (
+                f"当前 {q['name']} 持仓成本占初始资金 {stock_weight:.1f}%"
+                f"，高于 {risk_cap}% 柔性参考线，集中度偏高。"
+                if stock_weight > risk_cap else
+                f"当前 {q['name']} 持仓成本占初始资金 {stock_weight:.1f}%，在 {risk_cap}% 柔性参考线内。"
+            )
+            return "\n\n".join((
+                concentration,
+                f"初始资金 {total:,.0f} 元、可用资金 {available:,.0f} 元、本股持仓成本 {stock_amount:,.0f} 元。比例用于提示集中度，不自动得出卖出结论。",
+                f"后续重点观察 {framework['support']:.2f} 支撑；若有效跌破，再结合成本和交易记录评估仓位。",
+            ))
+        if not total:
+            return f"还不能判断 {q['name']} 是否适合你的资金：请先设置初始资金。按现价买入 {lot_label} 约需 {min_buy_amount:,.0f} 元，另需预留交易费用。"
+        if min_buy_amount > available:
+            return (
+                f"当前资金暂时买不了 {q['name']} 的最低申报数量。按现价 {q['price']:.2f} 元，"
+                f"{lot_label}约需 {min_buy_amount:,.0f} 元，高于可用资金 {available:,.0f} 元，且尚未计入交易费用。"
+            )
+        concentration = (
+            f"会占初始资金 {min_buy_weight:.1f}%，高于 {risk_cap}% 柔性参考线，集中度偏高；"
+            "但资金可成交，这不是机械否决。"
+            if min_buy_weight > risk_cap else
+            f"会占初始资金 {min_buy_weight:.1f}%，在 {risk_cap}% 柔性参考线内。"
+        )
+        return "\n\n".join((
+            f"资金上可以买到最低申报数量：{lot_label}约需 {min_buy_amount:,.0f} 元，{concentration}",
+            f"是否进入还要看技术条件：参考支撑 {framework['support']:.2f}、压力 {framework['resistance']:.2f}，不要只因资金够就直接买入。",
+        ))
+
+    if intent == "technical":
+        ma20 = tech.get("ma20")
+        ma60 = tech.get("ma60")
+        chg20 = tech.get("chg20")
+        chg60 = tech.get("chg60")
+        trend = "偏强" if tech.get("above_ma20") and tech.get("macd_golden") else "偏弱" if not tech.get("above_ma20") else "震荡"
+        facts = [f"现价 {q['price']:.2f}，今日 {q['change_pct']:+.2f}%"]
+        if chg20 is not None:
+            facts.append(f"近20日 {chg20:+.2f}%")
+        if chg60 is not None:
+            facts.append(f"近60日 {chg60:+.2f}%")
+        if ma20:
+            facts.append(f"20日线 {ma20:.2f}")
+        if ma60:
+            facts.append(f"60日线 {ma60:.2f}")
+        return "\n\n".join((
+            f"从当前日线技术结构看，{q['name']}处于{trend}状态；这只能回答价格趋势，不能解释公司层面的下跌原因。",
+            "关键数据：" + "，".join(facts) + "。",
+            f"接下来观察 {framework['support']:.2f} 能否守住，以及 {framework['resistance']:.2f} 能否有效突破；若你想问月线持续多久，我可以按已完成月 K 单独统计。",
+        ))
 
     lines = []
     if position and stock_amount:
@@ -1226,6 +1461,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
     intraday = st.get("intraday") or _intraday_context(st.get("minute"), q, clock)
     safe_profile = _safe_profile(profile, code)
     framework = _rule_stock_ai(q, tech)
+    monthly = _monthly_trend_context(st.get("kline_month") or [], clock)
     position = safe_profile.get("current_position")
     risk_cap = {"保守": 10, "稳健": 15, "进取": 20}.get(safe_profile.get("risk_level"), 15)
     minimum_buy_shares = _minimum_buy_shares(q.get("code"))
@@ -1246,6 +1482,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
         },
         "market_session": clock,
         "intraday": intraday,
+        "monthly_trend": monthly,
         "long_term_zone": _long_term_zone(q, tech, framework["support"]),
         "allocation_constraints": {
             "minimum_buy_shares": minimum_buy_shares,
@@ -1258,8 +1495,11 @@ def get_stock_chat(code, question, messages=None, profile=None):
         "investor": safe_profile,
     }
     system = (
-        "你是 FinForge 的 A 股持仓研究助手。你必须只依据提供的行情、技术指标和投资档案回答。"
-        "第一句话必须直接给出与问题对应的结论，不要只复述数据。再说明依据、风险与需要观察的失效条件。"
+        "你是 FinForge 的 A 股研究对话助手。你必须只依据提供的行情、技术指标和投资档案回答。"
+        "先识别用户当前只问了什么；第一句话必须直接回答，不要自动附送资金、盘中、支撑、长期区间等整套报告。"
+        "只补充回答当前问题所必需的依据；除非用户明确要求全面分析，否则控制在 3 个短段落内。"
+        "用户询问月K、连跌月份或是否跌了一年时，必须优先引用 monthly_trend：严格区分“连续月线收跌”"
+        "与“从阶段高点回撤持续多久”，并明确当月未完成 K 线不计入连续月份。"
         "涉及仓位时同时考虑初始资金使用率、上下文给出的最低买入股数及金额、单股占初始资金比例、"
         "组合集中度、风险偏好和投资周期。未持有该股票时不得使用‘持有、减仓、继续持有’等持仓措辞；"
         "必须严格按 investor.horizon 回答：短线重5/20日量价和动量，波段重20日趋势与回撤，"
@@ -1267,6 +1507,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
         "必须感知 market_session：连续竞价盘中只给临时策略，优先解释均价线、日内位置和15分钟动量，"
         "不得使用收盘确认措辞；午间休市要明确等待午后确认；盘后才允许按收盘结果复盘。"
         "用户询问长期买点时，只能引用 long_term_zone 作为技术观察区，并同时给出确认条件、失效条件和数据边界。"
+        "单股比例是柔性集中度参考；资金足够最低申报数量时，不得仅因超过参考比例就说绝对不能买。"
         "不要承诺收益，不要给出确定性买卖指令，"
         "不要把技术支撑位描述为保证。若资料不足，明确指出缺少什么。回答使用简洁中文，控制在 350 字内。"
         "投资档案仅用于本次回答。以下是可信数据上下文：\n" + json.dumps(context, ensure_ascii=False)
@@ -1280,7 +1521,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
             history.append({"role": item["role"], "content": content})
     user_question = str(question or "").strip()[:1000]
     raw = _call_deepseek([{"role": "system", "content": system}, *history, {"role": "user", "content": user_question}], timeout=45)
-    answer = raw.strip()[:2400] if raw else _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday)
+    answer = raw.strip()[:2400] if raw else _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday, monthly)
     return {
         "message": answer,
         "source": "deepseek" if raw else "rule",
@@ -1291,6 +1532,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
             "stock_weight": round(stock_weight, 1),
             "market_phase": clock["phase"],
             "market_label": clock["label"],
+            "intent": _stock_chat_intent(user_question),
         },
     }
 
