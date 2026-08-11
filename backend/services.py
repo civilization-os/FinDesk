@@ -952,6 +952,22 @@ def _monthly_trend_context(kline_month, clock=None):
             "incomplete": True,
         }
 
+    completed_closes = [item["close"] for item in completed]
+    ma5 = round(sum(completed_closes[-5:]) / 5, 2) if len(completed_closes) >= 5 else None
+    ma10 = round(sum(completed_closes[-10:]) / 10, 2) if len(completed_closes) >= 10 else None
+    previous_ma5 = round(sum(completed_closes[-6:-1]) / 5, 2) if len(completed_closes) >= 6 else None
+    ma5_change_pct = (
+        round((ma5 / previous_ma5 - 1) * 100, 2)
+        if ma5 is not None and previous_ma5
+        else None
+    )
+    if ma5 is not None and ma10 is not None and latest["close"] < ma10 and ma5 < ma10:
+        trend_status = "中期下降趋势尚未扭转"
+    elif ma5 is not None and ma10 is not None and latest["close"] >= ma5 >= ma10:
+        trend_status = "月线趋势正在修复"
+    else:
+        trend_status = "月线方向仍需观察"
+
     return {
         "available": True,
         "latest_completed_month": latest["month"],
@@ -966,6 +982,10 @@ def _monthly_trend_context(kline_month, clock=None):
         "months_since_peak": months_since_peak,
         "peak_to_latest_pct": peak_to_latest_pct,
         "trailing_12m_pct": trailing_12_pct,
+        "ma5": ma5,
+        "ma10": ma10,
+        "ma5_change_pct": ma5_change_pct,
+        "trend_status": trend_status,
         "current_month": current_month,
         "recent_completed": changes[-8:],
         "definition": "连续下跌按相邻两个已完成月 K 的收盘价逐月下降计算；本月未收盘时单独列示，不计入连续月份。",
@@ -1223,20 +1243,26 @@ def _monthly_chat_answer(q, monthly):
     consecutive = monthly["consecutive_down_months"]
     latest_month = _display_month(monthly["latest_completed_month"])
     latest_change = monthly["latest_completed_change_pct"]
-    if consecutive:
-        conclusion = (
-            f"按已完成月 K 计算，{q['name']}截至{latest_month}连续下跌 {consecutive} 个月，"
-            f"最近一个完整月收盘变动 {latest_change:+.2f}%。"
-        )
-    else:
-        conclusion = (
-            f"不是连续跌了一年多。按已完成月 K 计算，{q['name']}当前连续下跌为 0 个月；"
-            f"最近一个完整月是{latest_month}，收盘较前月 {latest_change:+.2f}%。"
-        )
-
     peak_month = _display_month(monthly["peak_month"])
     span = monthly["months_since_peak"]
     drawdown = monthly.get("peak_to_latest_pct")
+    conclusion = (
+        f"你看得没错：从趋势上看，{q['name']}月 K 仍处于“{monthly.get('trend_status') or '中期回撤'}”；"
+        f"从{peak_month}月收盘高点 {monthly['peak_close']:.2f} 到{latest_month} "
+        f"{monthly['latest_completed_close']:.2f}，已持续约 {span} 个月、累计 {drawdown:+.2f}%。"
+    )
+
+    if consecutive:
+        strict_count = (
+            f"如果严格按“每个月收盘都低于前一个月”计算，截至{latest_month}连续收跌 {consecutive} 个月，"
+            f"最近一个完整月变动 {latest_change:+.2f}%。"
+        )
+    else:
+        strict_count = (
+            f"刚才的“0 个月”只表示严格的连续收跌计数被{latest_month}的 {latest_change:+.2f}% 反弹打断，"
+            "不代表中期下降趋势已经结束。"
+        )
+
     longest = monthly.get("longest_down_months_recent") or 0
     if longest:
         streak = (
@@ -1245,11 +1271,14 @@ def _monthly_chat_answer(q, monthly):
         )
     else:
         streak = "近两年没有形成连续月线收跌"
-    structure = (
-        f"你看到的更接近“中期回撤持续较久”：从{peak_month}月收盘高点 {monthly['peak_close']:.2f} "
-        f"到{latest_month} {monthly['latest_completed_close']:.2f}，历时约 {span} 个月、累计 {drawdown:+.2f}%；"
-        f"但中间有反弹月，{streak}。"
-    )
+    ma_note = ""
+    if monthly.get("ma5") is not None and monthly.get("ma10") is not None:
+        ma_note = (
+            f"截至完整月，月线 MA5 约 {monthly['ma5']:.2f}、MA10 约 {monthly['ma10']:.2f}；"
+            f"{streak}。"
+        )
+    else:
+        ma_note = f"{streak}。"
 
     current = monthly.get("current_month")
     if current:
@@ -1259,7 +1288,7 @@ def _monthly_chat_answer(q, monthly):
         )
     else:
         current_note = "以上只按已完成月 K 收盘价统计。"
-    return "\n\n".join((conclusion, structure, current_note))
+    return "\n\n".join((conclusion, strict_count, ma_note + " " + current_note))
 
 
 def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, monthly=None):
@@ -1498,8 +1527,10 @@ def get_stock_chat(code, question, messages=None, profile=None):
         "你是 FinForge 的 A 股研究对话助手。你必须只依据提供的行情、技术指标和投资档案回答。"
         "先识别用户当前只问了什么；第一句话必须直接回答，不要自动附送资金、盘中、支撑、长期区间等整套报告。"
         "只补充回答当前问题所必需的依据；除非用户明确要求全面分析，否则控制在 3 个短段落内。"
-        "用户询问月K、连跌月份或是否跌了一年时，必须优先引用 monthly_trend：严格区分“连续月线收跌”"
-        "与“从阶段高点回撤持续多久”，并明确当月未完成 K 线不计入连续月份。"
+        "用户询问月K、连跌月份或是否跌了一年时，必须优先引用 monthly_trend：先回答整体趋势是否仍在下跌，"
+        "再解释“连续月线收跌”的严格计数。反弹月只会打断连续计数，不能据此否定中期下降趋势；"
+        "若 trend_status 仍为下降趋势，禁止用‘没有下跌’或‘不是跌了一年’作为开头。"
+        "同时区分从阶段高点回撤持续多久，并明确当月未完成 K 线不计入连续月份。"
         "涉及仓位时同时考虑初始资金使用率、上下文给出的最低买入股数及金额、单股占初始资金比例、"
         "组合集中度、风险偏好和投资周期。未持有该股票时不得使用‘持有、减仓、继续持有’等持仓措辞；"
         "必须严格按 investor.horizon 回答：短线重5/20日量价和动量，波段重20日趋势与回撤，"
