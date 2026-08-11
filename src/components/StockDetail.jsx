@@ -3,12 +3,13 @@ import { getStock, getStockAI } from '../api.js'
 import { loadProfile } from '../profile.js'
 import { IconTrend } from './icons.jsx'
 import StockChat from './StockChat.jsx'
+import { startMarketPolling } from '../marketSession.js'
 
 const fmt = (v, d = 2) => (v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d })
 
 // 个股详情弹层:实时报价 + 分时图 + 日K蜡烛图 + 基本信息,支持加入/移出自选
 export default function StockDetail({ code, watched, onToggleWatch, onClose }) {
-  const [state, setState] = useState({ data: null, error: null })
+  const [state, setState] = useState({ data: null, error: null, refreshedAt: null })
   const [aiState, setAiState] = useState({ data: null, error: false })
   const [view, setView] = useState('minute')
   const [chatOpen, setChatOpen] = useState(false)
@@ -17,29 +18,31 @@ export default function StockDetail({ code, watched, onToggleWatch, onClose }) {
 
   useEffect(() => {
     let alive = true
-    setState({ data: null, error: null })
+    setState({ data: null, error: null, refreshedAt: null })
     setView('minute')
     const load = () =>
       getStock(code).then(({ data, live }) => {
         if (!alive) return
-        if (live && data) setState({ data, error: null })
-        else setState((prev) => (prev.data ? prev : { data: null, error: '加载失败,请稍后重试' }))
+        if (live && data) setState({ data, error: null, refreshedAt: Date.now() })
+        else setState((prev) => (prev.data ? prev : { data: null, error: '加载失败,请稍后重试', refreshedAt: null }))
       })
-    load()
-    // 弹窗停留期间每 15s 静默刷新报价;失败时保留上一次数据不闪错
-    const id = setInterval(load, 15000)
-    return () => { alive = false; clearInterval(id) }
+    const stopPolling = startMarketPolling(load, 8000)
+    return () => { alive = false; stopPolling() }
   }, [code, requestVersion])
 
   // AI 与行情并行开始请求，避免详情渲染后再串行等待分析结果。
   useEffect(() => {
     let alive = true
     setAiState({ data: null, error: false })
-    getStockAI(code, loadProfile()).then(({ data, live }) => {
+    const load = () => getStockAI(code, loadProfile()).then(({ data, live }) => {
       if (!alive) return
-      setAiState(live && data ? { data, error: false } : { data: null, error: true })
+      setAiState((current) => (live && data
+        ? { data, error: false }
+        : current.data ? current : { data: null, error: true }))
     })
-    return () => { alive = false }
+    // AI 盘中每 3 分钟重算；报价仍按 8 秒刷新，避免高频调用模型。
+    const stopPolling = startMarketPolling(load, 180000)
+    return () => { alive = false; stopPolling() }
   }, [code, requestVersion])
 
   useEffect(() => {
@@ -99,6 +102,7 @@ export default function StockDetail({ code, watched, onToggleWatch, onClose }) {
             onToggleWatch={onToggleWatch}
             onClose={onClose}
             aiState={aiState}
+            refreshedAt={state.refreshedAt}
             chatOpen={chatOpen}
             onOpenChat={() => setChatOpen(true)}
           />
@@ -111,13 +115,15 @@ export default function StockDetail({ code, watched, onToggleWatch, onClose }) {
   )
 }
 
-function StockBody({ data, view, setView, watched, onToggleWatch, onClose, aiState, chatOpen, onOpenChat }) {
+function StockBody({ data, view, setView, watched, onToggleWatch, onClose, aiState, refreshedAt, chatOpen, onOpenChat }) {
   const { quote, minute, kline = [], kline_week = [], kline_month = [] } = data
   const up = quote.change_pct >= 0
   const klineData = view === 'week' ? kline_week : view === 'month' ? kline_month : kline
   const daySpan = quote.high - quote.low
   const rangePosition = daySpan > 0 ? Math.max(0, Math.min(100, ((quote.price - quote.low) / daySpan) * 100)) : 50
   const exchange = quote.code?.startsWith('6') ? 'SH' : quote.code?.startsWith('8') || quote.code?.startsWith('4') ? 'BJ' : 'SZ'
+  const session = data.market_session || {}
+  const refreshTime = refreshedAt ? new Date(refreshedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'
   return (
     <>
       <div className="modal-head">
@@ -128,7 +134,7 @@ function StockBody({ data, view, setView, watched, onToggleWatch, onClose, aiSta
             {quote.name}
             <span className="wcode">{quote.code}</span>
           </h2>
-          <div className="modal-sub"><span className="live-pulse" /> 腾讯行情 · 实时同步</div>
+           <div className="modal-sub"><span className={`live-pulse ${session.is_trading ? 'active' : 'paused'}`} /> 腾讯行情 · {session.label || '行情快照'}</div>
           </div>
         </div>
         <div className="modal-actions">
@@ -143,6 +149,12 @@ function StockBody({ data, view, setView, watched, onToggleWatch, onClose, aiSta
           </button>
           <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         </div>
+      </div>
+
+      <div className={`market-session-band ${session.is_trading ? 'trading' : session.phase || 'closed'}`}>
+        <div><span>MARKET CLOCK</span><strong>{session.label || '行情快照'} · {session.time || refreshTime}</strong></div>
+        <p>{session.strategy_focus || '依据当前可用行情进行研究，不将静态快照描述为实时信号。'}</p>
+        <div className="session-refresh"><i />{session.is_trading ? '报价 8 秒刷新 · AI 3 分钟重算' : `最近同步 ${refreshTime}`}</div>
       </div>
 
       <section className={`quote-overview ${up ? 'positive' : 'negative'}`}>
@@ -185,7 +197,7 @@ function StockBody({ data, view, setView, watched, onToggleWatch, onClose, aiSta
                 >{label}</button>
               ))}
             </div>
-            <span className="chart-source">{view === 'minute' ? '实时分时 · 均价线' : '前复权 · MA5 / MA10'}</span>
+            <span className="chart-source">{view === 'minute' ? `${session.is_trading ? '盘中分时' : session.label || '当日分时'} · 均价线` : '前复权 · MA5 / MA10'}</span>
           </div>
           <div className="modal-chart">
             {view === 'minute' ? <MinuteChart minute={minute} up={up} /> : <KlineChart kline={klineData} />}
@@ -228,6 +240,7 @@ function AiAdvice({ state }) {
         AI 投资建议
         <span className="ai-advice-tag">{data?.source === 'deepseek' ? 'DeepSeek 分析' : '量化规则'}</span>
         {data?.horizon ? <span className="ai-advice-tag horizon">{data.horizon}</span> : null}
+        {data?.market_session?.label ? <span className={`ai-advice-tag session ${data.market_session.is_trading ? 'live' : ''}`}>{data.market_session.label}</span> : null}
       </div>
       {state.error ? (
         <p className="ai-advice-empty">AI 投资建议暂不可用，请确认行情后端已连接。</p>
@@ -238,6 +251,7 @@ function AiAdvice({ state }) {
         </div>
       ) : (
         <>
+          <IntradayStrategy data={data} />
           <div className={`ai-verdict ${data.signal || 'neutral'}`}>
             <div className="verdict-action">
               <span>操作倾向 · AI ACTION</span>
@@ -286,6 +300,7 @@ function AiAdvice({ state }) {
             <p className="ai-advice-row"><b>策略</b>{state.data.advice}</p>
             <p className="ai-advice-row risk"><b>风险</b>{state.data.risk}</p>
           </div>
+          <LongTermZone zone={data.long_term_zone} />
           {data.plan && (
             <section className="ai-plan">
               <div className="ai-section-head"><h4>条件化行动方案</h4><span>按状态执行，不提供确定性收益判断</span></div>
@@ -313,6 +328,46 @@ function AiAdvice({ state }) {
         </>
       )}
     </div>
+  )
+}
+
+function IntradayStrategy({ data }) {
+  const session = data.market_session || {}
+  const intraday = data.intraday || {}
+  const metric = (value, suffix = '%', signed = true) => Number.isFinite(Number(value)) ? `${signed && Number(value) > 0 ? '+' : ''}${fmt(Number(value))}${suffix}` : '—'
+  return (
+    <section className={`intraday-strategy ${session.is_trading ? 'live' : ''}`} aria-label="交易时段策略">
+      <div className="intraday-mode">
+        <span>{session.is_trading ? 'LIVE TACTIC' : 'SESSION MODE'}</span>
+        <strong>{session.label || '行情快照'}</strong>
+        <small>{data.session_note}</small>
+      </div>
+      <div className="intraday-metrics">
+        <div><span>较分时均价</span><b className="num">{metric(intraday.vs_average_pct)}</b></div>
+        <div><span>近 15 分钟</span><b className="num">{metric(intraday.momentum_15m_pct)}</b></div>
+        <div><span>日内位置</span><b className="num">{metric(intraday.day_position_pct, '%', false)}</b></div>
+      </div>
+      <p>{intraday.provisional ? '盘中信号随成交变化，收盘前只用于条件判断。' : '当前不是连续竞价盘中，按最近有效快照复盘。'}</p>
+    </section>
+  )
+}
+
+function LongTermZone({ zone }) {
+  if (!zone) return null
+  return (
+    <section className="long-zone" aria-labelledby="long-zone-title">
+      <div className="long-zone-mark"><span>LONG</span><b>长期观察</b></div>
+      <div className="long-zone-price">
+        <span id="long-zone-title">{zone.label}</span>
+        <strong className="num">{fmt(zone.lower)} <i>—</i> {fmt(zone.upper)}</strong>
+        <small>{zone.basis}</small>
+      </div>
+      <div className="long-zone-rules">
+        <p><b>确认</b>{zone.confirmation}</p>
+        <p><b>失效</b>{zone.invalidation}</p>
+      </div>
+      <p className="long-zone-scope">{zone.note} {zone.scope}</p>
+    </section>
   )
 }
 

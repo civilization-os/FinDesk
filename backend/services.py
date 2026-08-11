@@ -13,9 +13,13 @@ import time
 import threading
 import concurrent.futures
 import math
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 import akshare as ak
+
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 # 新浪等源个别生僻字会以孤代理对出现,导致前端 JSON.parse 失败,统一清理
 def _clean(s):
@@ -60,6 +64,78 @@ def _num(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def _market_clock(source_time=None):
+    """A 股常规交易时段。节假日仍以数据源是否更新为准。"""
+    now = datetime.now(_SHANGHAI_TZ)
+    minutes = now.hour * 60 + now.minute
+    weekday = now.weekday() < 5
+    if not weekday:
+        phase, label, live = "weekend", "周末休市", False
+        focus = "使用最近收盘数据复盘，不把静态报价描述为盘中信号。"
+    elif minutes < 9 * 60 + 15:
+        phase, label, live = "pre_open", "盘前准备", False
+        focus = "盘前只制定条件，不使用尚未形成的分时量价判断方向。"
+    elif minutes < 9 * 60 + 30:
+        phase, label, live = "auction", "集合竞价", False
+        focus = "竞价价格和量能容易跳变，只观察缺口与预期，不提前确认趋势。"
+    elif minutes < 11 * 60 + 30:
+        phase, label, live = "morning", "上午盘中", True
+        focus = "盘中结论是临时快照，重点观察均价线、日内位置和短周期动量。"
+    elif minutes < 13 * 60:
+        phase, label, live = "lunch", "午间休市", False
+        focus = "上午行情已暂停，等待午后开盘确认，不把午间静态价格当作持续信号。"
+    elif minutes < 15 * 60:
+        phase, label, live = "afternoon", "下午盘中", True
+        focus = "结合均价线、尾盘量价与日内高低判断，收盘前不使用收盘确认措辞。"
+    else:
+        phase, label, live = "closed", "盘后复盘", False
+        focus = "以收盘结果复盘趋势与风险条件，不再按实时盘中策略表述。"
+    source_as_of = None
+    if source_time:
+        try:
+            source_at = datetime.strptime(str(source_time)[:14], "%Y%m%d%H%M%S").replace(tzinfo=_SHANGHAI_TZ)
+            source_as_of = source_at.isoformat(timespec="seconds")
+            age_seconds = (now - source_at).total_seconds()
+            if live and (source_at.date() != now.date() or age_seconds > 600):
+                phase, label, live = "delayed", "行情延迟", False
+                focus = "当前报价源超过 10 分钟未更新，暂停盘中信号判断，等待数据恢复。"
+        except (TypeError, ValueError):
+            pass
+    minutes_to_close = max(0, 15 * 60 - minutes) if live else None
+    return {
+        "phase": phase,
+        "label": label,
+        "is_trading": live,
+        "as_of": now.isoformat(timespec="seconds"),
+        "time": now.strftime("%H:%M"),
+        "minutes_to_close": minutes_to_close,
+        "source_as_of": source_as_of,
+        "strategy_focus": focus,
+        "calendar_note": "按沪深市场常规时段判断，法定休市日以行情源实际更新为准。",
+    }
+
+
+def _intraday_context(minute, quote, clock):
+    minute = minute if isinstance(minute, dict) else {}
+    prices = minute.get("prices") or []
+    averages = minute.get("avg_prices") or []
+    times = minute.get("times") or []
+    price = quote.get("price") or 0
+    average = averages[-1] if averages else None
+    base_index = max(0, len(prices) - 16)
+    momentum_base = prices[base_index] if prices else None
+    day_span = (quote.get("high") or 0) - (quote.get("low") or 0)
+    return {
+        "phase": clock["phase"],
+        "latest_minute": times[-1] if times else None,
+        "average_price": round(average, 2) if average else None,
+        "vs_average_pct": round((price / average - 1) * 100, 2) if price and average else None,
+        "momentum_15m_pct": round((price / momentum_base - 1) * 100, 2) if price and momentum_base else None,
+        "day_position_pct": round((price - quote["low"]) / day_span * 100, 1) if price and day_span > 0 else None,
+        "provisional": bool(clock["is_trading"]),
+    }
 
 # ---------------- 腾讯行情(自实现,规避 akshare 未封装/风控问题) ----------------
 _QQ_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -108,6 +184,7 @@ def qq_quotes(codes):
                 "limit_up": _f(47),       # 涨停价
                 "limit_down": _f(48),     # 跌停价
                 "volume_ratio": _f(49),   # 量比
+                "quote_time": f[30].strip() if len(f) > 30 else "",
             }
         except (ValueError, IndexError):
             continue
@@ -408,8 +485,25 @@ def get_watchlist(codes=None):
     return out
 
 # ---------------- 个股详情(腾讯:实时 + 分时 + 日K) ----------------
-@cached(ttl=30)
-@cached(ttl=15)
+@cached(ttl=300)
+def _stock_history(tx):
+    """历史周期与实时报价分层缓存，避免每次盘中刷新都重拉周/月 K。"""
+    try:
+        kline_all = qq_kline(tx, 250, "day")
+    except Exception:
+        kline_all = []
+    try:
+        kline_week = qq_kline(tx, 64, "week")
+    except Exception:
+        kline_week = []
+    try:
+        kline_month = qq_kline(tx, 36, "month")
+    except Exception:
+        kline_month = []
+    return kline_all, kline_week, kline_month
+
+
+@cached(ttl=8)
 def get_stock(code):
     if not (code.isdigit() and len(code) == 6):
         return None
@@ -421,13 +515,8 @@ def get_stock(code):
         minute = qq_minute(tx)
     except Exception:
         minute = None
-    try:
-        kline_all = qq_kline(tx, 250, "day")  # 250 条用于技术指标与 52 周高低
-        kline_week = qq_kline(tx, 64, "week")
-        kline_month = qq_kline(tx, 36, "month")
-        kline = kline_all[-90:]  # 前端图表取最近 90 根,避免过密
-    except Exception:
-        kline_all, kline, kline_week, kline_month = [], [], [], []
+    kline_all, kline_week, kline_month = _stock_history(tx)
+    kline = kline_all[-90:]  # 前端图表取最近 90 根,避免过密
     quote = {
         "code": code,
         "name": _clean(q["name"]),
@@ -448,10 +537,12 @@ def get_stock(code):
         "amplitude": round(q.get("amplitude", 0), 2),          # 振幅 %
         "limit_up": round(q.get("limit_up", 0), 2),            # 涨停价
         "limit_down": round(q.get("limit_down", 0), 2),        # 跌停价
+        "quote_time": q.get("quote_time") or "",
     }
     if kline_all:
         quote["high_52w"] = round(max(x["high"] for x in kline_all), 2)
         quote["low_52w"] = round(min(x["low"] for x in kline_all), 2)
+    clock = _market_clock(quote.get("quote_time"))
     return {
         "quote": quote,
         "minute": minute,
@@ -459,6 +550,8 @@ def get_stock(code):
         "kline_week": kline_week,  # 周K
         "kline_month": kline_month,  # 月K
         "tech": _tech_signals(kline_all),
+        "market_session": clock,
+        "intraday": _intraday_context(minute, quote, clock),
     }
 
 # ---------------- 技术指标(供 AI prompt 与规则降级使用) ----------------
@@ -749,6 +842,44 @@ def _rule_stock_ai(q, sig=None):
         **framework,
     }
 
+
+def _long_term_zone(q, sig, support):
+    """生成中长线技术观察区，不把单一技术价位包装成确定买点。"""
+    price = q.get("price") or 0
+    anchor_name = "60 日均线" if sig.get("ma60") else "20 日均线" if sig.get("ma20") else "结构支撑"
+    anchor = sig.get("ma60") or sig.get("ma20") or support or price
+    atr = sig.get("atr14") or price * 0.025
+    half_width = max(atr * 0.65, anchor * 0.015)
+    lower = round(max(0.01, anchor - half_width), 2)
+    upper = round(anchor + half_width, 2)
+    low20 = sig.get("low20") or lower
+    invalidation = round(max(0.01, min(lower - atr * 0.5, low20)), 2)
+    if price > upper:
+        status = "等待回落观察"
+        note = f"现价高于观察区，避免把追涨当成长线布局。"
+    elif price >= lower:
+        status = "进入技术观察区"
+        note = "价格已进入观察区，仍需等待企稳和趋势确认。"
+    else:
+        status = "先等趋势修复"
+        note = "现价跌破观察区，低价本身不等于低风险。"
+    confirmation = (
+        f"观察 {lower:.2f}–{upper:.2f} 附近能否止跌，并至少连续 2 个交易日收回 {anchor_name}；"
+        "量能不出现持续放大下跌后再重新评估。"
+    )
+    return {
+        "label": status,
+        "lower": lower,
+        "upper": upper,
+        "anchor": round(anchor, 2),
+        "anchor_name": anchor_name,
+        "basis": f"以{anchor_name}为锚，结合 ATR14 波动带形成的中长线技术观察区。",
+        "confirmation": confirmation,
+        "invalidation": f"若收盘有效跌破 {invalidation:.2f}，观察逻辑失效，应先评估趋势和基本面变化。",
+        "note": note,
+        "scope": "仅是技术面分批观察提示；缺少盈利预测、行业景气、现金流和估值分位，不能视为长期价值买点。",
+    }
+
 def get_stock_ai(code, profile=None):
     """个股 AI 建议:DeepSeek 生成,失败降级规则引擎。返回含 generated_at。"""
     st = get_stock(code)
@@ -756,6 +887,8 @@ def get_stock_ai(code, profile=None):
         return None
     q = st["quote"]
     tech = st.get("tech") or {}
+    clock = st.get("market_session") or _market_clock()
+    intraday = st.get("intraday") or _intraday_context(st.get("minute"), q, clock)
     safe_profile = _safe_profile(profile, code)
     horizon = safe_profile.get("horizon") or "波段"
     horizon_label = {"短线": "短线", "波段": "波段（中线）", "中长线": "中长线技术面"}[horizon]
@@ -763,7 +896,14 @@ def get_stock_ai(code, profile=None):
     lines = [
         f"个股:{q['name']} ({q['code']})",
         f"最新价 {q['price']},涨跌幅 {q['change_pct']:+.2f}%,今开 {q['open']},最高 {q['high']},最低 {q['low']},昨收 {q['prev_close']},成交额 {q['amount']} 亿",
+        f"市场阶段:{clock['label']}({clock['time']}),是否连续竞价盘中:{clock['is_trading']};策略要求:{clock['strategy_focus']}",
     ]
+    if intraday.get("latest_minute"):
+        lines.append(
+            f"分时快照:最新分钟 {intraday['latest_minute']},均价 {intraday.get('average_price')},"
+            f"偏离均价 {intraday.get('vs_average_pct')}%,近15分钟动量 {intraday.get('momentum_15m_pct')}%,"
+            f"日内位置 {intraday.get('day_position_pct')}%"
+        )
     if q.get("turnover_rate"):
         lines.append(f"换手率 {q['turnover_rate']}%,量比 {q['volume_ratio']},"
                      f"动态市盈率 {q['pe']},市净率 {q['pb']},总市值 {q['total_mv']} 亿")
@@ -802,6 +942,8 @@ def get_stock_ai(code, profile=None):
         "你是 A 股个股分析助手。基于以下实时行情与技术指标,给出一段简短、克制的中文分析建议。"
         f"用户主要周期是{horizon_label}。必须只按这一周期组织建议：短线重5/20日量价与动量，"
         "波段重20日趋势、确认信号与回撤，中长线重60日趋势与回撤。"
+        "若 market stage 是上午盘中或下午盘中，必须明确结论为盘中临时快照，优先使用均价线、"
+        "日内位置和15分钟动量，不得把未收盘日K或当日成交量当成完整收盘信号；午间休市则等待午后确认。"
         "中长线数据不含完整财报、行业景气和估值分位，不得下长期价值判断。"
         "输出 JSON,包含六个字段:summary(近期走势概述,≤60字,引用具体数字)、"
         "advice(操作建议,≤60字,只使用用户主要周期视角)、risk(风险提示,≤40字)、"
@@ -865,16 +1007,25 @@ def get_stock_ai(code, profile=None):
             ma20 = tech.get("ma20") or support
             out["advice"] = f"波段重点观察20日均线 {ma20:.2f}、量价确认与回撤；未满足条件前保持观察。"
     out["horizon"] = horizon_label
+    support = out.get("support") or q.get("low") or q["price"]
+    out["market_session"] = clock
+    out["intraday"] = intraday
+    out["long_term_zone"] = _long_term_zone(q, tech, support)
+    out["session_note"] = clock["strategy_focus"]
     out["style_scope"] = {
         "短线": "侧重量价、动量与5/20日结构，信号变化较快。",
         "波段": "侧重20日趋势、量价确认与回撤风险。",
         "中长线": "仅按60日趋势与回撤做技术面观察，不含完整基本面。",
     }[horizon]
+    if clock["is_trading"]:
+        out["advice"] = f"盘中快照：{clock['strategy_focus']}{out['advice']}"
+    elif clock["phase"] == "lunch":
+        out["advice"] = f"午间休市：上午信号尚需午后确认。{out['advice']}"
     out["suitability"] = (
         f"已按你的{horizon_label}周期组织技术面建议；具体资金与持仓适配，"
         "请以“问 AI”中结合当前资金档案的回答为准。"
     )
-    out["generated_at"] = time.strftime("%H:%M")
+    out["generated_at"] = clock["time"]
     return out
 
 
@@ -950,7 +1101,7 @@ def _minimum_buy_shares(code):
     return 200 if str(code or "").startswith(("688", "689")) else 100
 
 
-def _rule_stock_chat(q, tech, profile, question):
+def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None):
     """模型不可用时仍返回与持仓、集中度和关键价位相关的分析。"""
     framework = _rule_stock_ai(q, tech)
     position = profile.get("current_position")
@@ -968,6 +1119,8 @@ def _rule_stock_chat(q, tech, profile, question):
     risk_budget = round(total * risk_cap / 100, 2) if total else 0
     horizon = profile.get("horizon") or "波段"
     horizon_label = {"短线": "短线", "波段": "波段（中线）", "中长线": "中长线技术面"}[horizon]
+    clock = clock or _market_clock()
+    intraday = intraday or {}
 
     lines = []
     if position and stock_amount:
@@ -1022,6 +1175,13 @@ def _rule_stock_chat(q, tech, profile, question):
                 f"占初始资金 {min_buy_weight:.1f}%，处于{profile['risk_level']}型 {risk_cap}% 参考线以内。"
             )
 
+    session_detail = f"当前为{clock['label']}（{clock['time']}）"
+    if intraday.get("average_price"):
+        session_detail += (
+            f"，现价较分时均价 {intraday.get('vs_average_pct'):+.2f}%、"
+            f"近15分钟 {intraday.get('momentum_15m_pct'):+.2f}%"
+        )
+    lines.append(session_detail + "。" + clock["strategy_focus"])
     lines.append(
         f"{horizon_label}行情条件：现价 {q['price']:.2f}，今日 {q['change_pct']:+.2f}%；"
         f"参考支撑 {framework['support']:.2f}、压力 {framework['resistance']:.2f}。"
@@ -1045,6 +1205,11 @@ def _rule_stock_chat(q, tech, profile, question):
             f"下一步：围绕 {framework['support']:.2f} 设置风险观察线；若有效跌破，应重新评估仓位，"
             f"而不是把当前量化信号“{framework['action']}”当作确定性持有依据。"
         )
+    zone = _long_term_zone(q, tech, framework["support"])
+    lines.append(
+        f"中长线技术观察：{zone['lower']:.2f}–{zone['upper']:.2f} 为观察区，"
+        f"需要先满足“{zone['confirmation']}”；{zone['scope']}"
+    )
     return "\n\n".join(lines)
 
 
@@ -1057,6 +1222,8 @@ def get_stock_chat(code, question, messages=None, profile=None):
         return None
     q = st["quote"]
     tech = st.get("tech") or {}
+    clock = st.get("market_session") or _market_clock()
+    intraday = st.get("intraday") or _intraday_context(st.get("minute"), q, clock)
     safe_profile = _safe_profile(profile, code)
     framework = _rule_stock_ai(q, tech)
     position = safe_profile.get("current_position")
@@ -1077,6 +1244,9 @@ def get_stock_chat(code, question, messages=None, profile=None):
             "action": framework["action"], "support": framework["support"],
             "resistance": framework["resistance"], "risk": framework["risk"],
         },
+        "market_session": clock,
+        "intraday": intraday,
+        "long_term_zone": _long_term_zone(q, tech, framework["support"]),
         "allocation_constraints": {
             "minimum_buy_shares": minimum_buy_shares,
             "minimum_lot_value": min_buy_amount,
@@ -1094,6 +1264,9 @@ def get_stock_chat(code, question, messages=None, profile=None):
         "组合集中度、风险偏好和投资周期。未持有该股票时不得使用‘持有、减仓、继续持有’等持仓措辞；"
         "必须严格按 investor.horizon 回答：短线重5/20日量价和动量，波段重20日趋势与回撤，"
         "中长线重60日趋势与回撤且必须声明缺少完整基本面，不能混用不同周期逻辑。"
+        "必须感知 market_session：连续竞价盘中只给临时策略，优先解释均价线、日内位置和15分钟动量，"
+        "不得使用收盘确认措辞；午间休市要明确等待午后确认；盘后才允许按收盘结果复盘。"
+        "用户询问长期买点时，只能引用 long_term_zone 作为技术观察区，并同时给出确认条件、失效条件和数据边界。"
         "不要承诺收益，不要给出确定性买卖指令，"
         "不要把技术支撑位描述为保证。若资料不足，明确指出缺少什么。回答使用简洁中文，控制在 350 字内。"
         "投资档案仅用于本次回答。以下是可信数据上下文：\n" + json.dumps(context, ensure_ascii=False)
@@ -1107,7 +1280,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
             history.append({"role": item["role"], "content": content})
     user_question = str(question or "").strip()[:1000]
     raw = _call_deepseek([{"role": "system", "content": system}, *history, {"role": "user", "content": user_question}], timeout=45)
-    answer = raw.strip()[:2400] if raw else _rule_stock_chat(q, tech, safe_profile, user_question)
+    answer = raw.strip()[:2400] if raw else _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday)
     return {
         "message": answer,
         "source": "deepseek" if raw else "rule",
@@ -1116,6 +1289,8 @@ def get_stock_chat(code, question, messages=None, profile=None):
             "profile_ready": bool(safe_profile["total_capital"]),
             "is_holding": bool(position and position.get("amount")),
             "stock_weight": round(stock_weight, 1),
+            "market_phase": clock["phase"],
+            "market_label": clock["label"],
         },
     }
 

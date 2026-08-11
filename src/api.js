@@ -2,6 +2,7 @@
 // 后端接口结构与 data/market.js 保持一致,组件几乎无需改动。
 import { useEffect, useState } from 'react'
 import * as fallback from './data/market.js'
+import { startMarketPolling } from './marketSession.js'
 
 const API_BASE = '/api'
 
@@ -198,11 +199,11 @@ export function useLiveData(getter, fallbackData, intervalMs = 0, deps = []) {
           if (!alive) return
           setState((prev) => ({ ...prev, loading: false, error: true }))
         })
-    load()
     if (intervalMs > 0) {
-      const id = setInterval(load, intervalMs)
-      return () => { alive = false; clearInterval(id) }
+      const stopPolling = startMarketPolling(load, intervalMs)
+      return () => { alive = false; stopPolling() }
     }
+    load()
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)

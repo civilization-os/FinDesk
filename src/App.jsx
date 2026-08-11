@@ -20,6 +20,7 @@ import SectorRank from './components/SectorRank.jsx'
 import Watchlist from './components/Watchlist.jsx'
 import AccountStatus from './components/AccountStatus.jsx'
 import { getUserDataSection, saveUserDataSection } from './userData.js'
+import { getAStockSession, startMarketPolling, useMarketSession } from './marketSession.js'
 
 function loadWatchCodes() {
   const stored = getUserDataSection('watchlist')
@@ -38,6 +39,7 @@ export default function App() {
   const [selectedStock, setSelectedStock] = useState(null)
   const [notifyOpen, setNotifyOpen] = useState(false)
   const [watchCodes, setWatchCodes] = useState(loadWatchCodes)
+  const marketSession = useMarketSession()
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -66,6 +68,7 @@ export default function App() {
 
     const fire = async () => {
       if (!aliveRef.current) return
+      if (!getAStockSession().isTrading) return
       const { data } = await getInsights()
       if (aliveRef.current && Array.isArray(data) && data.length) {
         setNotifyOpen(true)
@@ -78,8 +81,7 @@ export default function App() {
         }
       }
     }
-    const id = setInterval(fire, cfg.intervalMin * 60000)
-    return () => clearInterval(id)
+    return startMarketPolling(fire, cfg.intervalMin * 60000)
   }, [])
 
   const openStock = useCallback((code) => setSelectedStock(code), [])
@@ -99,16 +101,6 @@ export default function App() {
     const t = kw.trim()
     if (/^\d{6}$/.test(t)) openStock(t)
   }, [openStock])
-
-  const marketSession = (() => {
-    const now = new Date()
-    const minutes = now.getHours() * 60 + now.getMinutes()
-    const tradingDay = now.getDay() > 0 && now.getDay() < 6
-    if (!tradingDay) return '周末休市'
-    if (minutes < 9 * 60 + 15) return '盘前准备'
-    if (minutes <= 15 * 60) return '交易时段'
-    return '盘后复盘'
-  })()
 
   return (
     <div className={`app ${collapsed ? 'collapsed' : ''}`}>
@@ -165,7 +157,7 @@ export default function App() {
                     <div className="session-stamp">
                       <span className="session-dot" />
                       <span>当前状态</span>
-                      <strong>{marketSession}</strong>
+                      <strong>{marketSession.label}</strong>
                     </div>
                     <button className="market-entry" type="button" onClick={gotoMarket}>
                       市场全景 <span aria-hidden="true">↗</span>

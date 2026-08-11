@@ -3,6 +3,7 @@ import { askStockAI } from '../api.js'
 import { createChatMessage, createChatThread, loadChatThreads, saveChatThreads } from '../chatStore.js'
 import { getPosition, loadProfile, summarizeProfile } from '../profile.js'
 import ConfirmDialog from './ConfirmDialog.jsx'
+import { useMarketSession } from '../marketSession.js'
 
 const timeLabel = (value) => {
   const date = new Date(value)
@@ -22,6 +23,7 @@ export default function StockChat({ code, name, onClose }) {
   const messageEndRef = useRef(null)
   const inputRef = useRef(null)
   const requestRef = useRef(null)
+  const marketSession = useMarketSession()
 
   const stockThreads = useMemo(() => threads.filter((thread) => thread.code === code), [threads, code])
   const activeThread = threads.find((thread) => thread.id === activeId && thread.code === code) || null
@@ -124,7 +126,7 @@ export default function StockChat({ code, name, onClose }) {
 
   const quickPrompts = position?.amount
     ? ['当前仓位是否过重？', '结合成本价，我该关注哪些风险？', '如果跌破支撑位，仓位怎么评估？']
-    : ['这只股票适合我的资金配置吗？', '如果考虑买入，需要等待什么条件？', '当前主要风险是什么？']
+    : ['这只股票适合我的资金配置吗？', '如果考虑买入，需要等待什么条件？', '长期技术观察区在哪里？']
 
   return (
     <aside className="stock-chat" aria-label={`${name} AI 持仓对话`} onClick={(event) => event.stopPropagation()}>
@@ -143,6 +145,7 @@ export default function StockChat({ code, name, onClose }) {
         <span className={profileSummary.totalCapital ? 'ready' : ''}>{profileSummary.totalCapital ? `初始资金 ¥${profileSummary.totalCapital.toLocaleString('zh-CN')}` : '未设置初始资金'}</span>
         <span>{position?.amount ? `本股 ${profileSummary.totalCapital ? (Number(position.amount) / profileSummary.totalCapital * 100).toFixed(1) : '—'}%` : '本股未配置'}</span>
         <span>{profileSummary.riskLevel} · {profileSummary.horizon}</span>
+        <span className={marketSession.isTrading ? 'ready' : ''}>{marketSession.label}</span>
       </div>
 
       {historyOpen && (

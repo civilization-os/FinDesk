@@ -1735,6 +1735,10 @@ body {
   letter-spacing: 0.04em;
 }
 .ai-advice-tag.horizon { color: #f5ead9; background: #26322e; }
+.ai-advice-tag.horizon,
+.ai-advice-tag.session { margin-left: 0; }
+.ai-advice-tag.session { color: var(--text-secondary); background: var(--bg); }
+.ai-advice-tag.session.live { color: #1e795f; background: rgba(47, 143, 112, 0.12); }
 
 .ai-advice-body {
   display: flex;
@@ -3693,6 +3697,30 @@ body {
   background: var(--down);
   box-shadow: 0 0 0 4px var(--down-soft);
 }
+.live-pulse.paused { background: #d6a15d; box-shadow: 0 0 0 4px rgba(214, 161, 93, 0.12); }
+.live-pulse.active { animation: livePulse 1.8s ease-out infinite; }
+@keyframes livePulse { 50% { box-shadow: 0 0 0 7px rgba(217, 108, 93, 0); } }
+
+.market-session-band {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin: 16px 0 -10px;
+  padding: 10px 13px;
+  border: 1px solid var(--separator);
+  border-left: 3px solid #d6a15d;
+  border-radius: 9px 9px 9px 3px;
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}
+.market-session-band.trading { border-left-color: #2f8f70; background: color-mix(in srgb, var(--down-soft) 30%, var(--card)); }
+.market-session-band > div:first-child { display: flex; min-width: 128px; flex-direction: column; }
+.market-session-band > div:first-child span { color: var(--text-tertiary); font: 700 8px 'Bahnschrift', sans-serif; letter-spacing: 0.14em; }
+.market-session-band > div:first-child strong { margin-top: 2px; font-size: 11px; }
+.market-session-band > p { color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
+.session-refresh { display: flex; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 9.5px; white-space: nowrap; }
+.session-refresh i { width: 6px; height: 6px; border-radius: 50%; background: #d6a15d; }
+.market-session-band.trading .session-refresh i { background: #2f8f70; box-shadow: 0 0 0 4px rgba(47, 143, 112, 0.1); }
 
 .modal-actions .watch-add {
   position: static;
@@ -3834,6 +3862,29 @@ body {
   font-size: 12px;
 }
 
+.intraday-strategy {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.9fr) minmax(280px, 1.25fr);
+  gap: 10px 20px;
+  margin-bottom: 12px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, #d6a15d 28%, var(--separator));
+  border-radius: 10px 10px 10px 3px;
+  background: color-mix(in srgb, #d6a15d 7%, var(--card));
+}
+.intraday-strategy.live { border-color: color-mix(in srgb, #2f8f70 38%, var(--separator)); background: color-mix(in srgb, #2f8f70 6%, var(--card)); }
+.intraday-mode { display: flex; flex-direction: column; }
+.intraday-mode > span { color: #a66c28; font: 700 8px 'Bahnschrift', sans-serif; letter-spacing: 0.15em; }
+.intraday-strategy.live .intraday-mode > span { color: #27785f; }
+.intraday-mode strong { margin: 2px 0; font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', serif; font-size: 16px; }
+.intraday-mode small { color: var(--text-tertiary); font-size: 9px; line-height: 1.45; }
+.intraday-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-left: 1px solid var(--separator); }
+.intraday-metrics > div { display: flex; padding: 2px 12px; flex-direction: column; justify-content: center; border-right: 1px solid var(--separator); }
+.intraday-metrics > div:last-child { border-right: 0; }
+.intraday-metrics span { color: var(--text-tertiary); font-size: 8.5px; }
+.intraday-metrics b { margin-top: 3px; font-size: 13px; }
+.intraday-strategy > p { grid-column: 1 / -1; padding-top: 8px; border-top: 1px dashed var(--separator); color: var(--text-tertiary); font-size: 9px; }
+
 .ai-verdict {
   display: grid;
   grid-template-columns: 1fr 1.2fr 1fr;
@@ -3944,6 +3995,31 @@ body {
 .plan-row p { color: var(--text-secondary); font-size: 10.5px; line-height: 1.55; }
 .plan-row.invalid > span { color: #e18a36; }
 
+.long-zone {
+  display: grid;
+  grid-template-columns: 82px minmax(180px, 0.72fr) minmax(0, 1.45fr);
+  gap: 14px;
+  align-items: center;
+  margin-top: 15px;
+  padding: 15px;
+  border: 1px solid color-mix(in srgb, #d6a15d 42%, var(--separator));
+  border-radius: 11px 11px 11px 3px;
+  background: linear-gradient(115deg, rgba(214, 161, 93, 0.12), color-mix(in srgb, var(--card) 86%, transparent));
+}
+.long-zone-mark { display: flex; min-height: 58px; flex-direction: column; justify-content: center; border-right: 1px solid color-mix(in srgb, #d6a15d 36%, var(--separator)); }
+.long-zone-mark span { color: #a66c28; font: 700 8px 'Bahnschrift', sans-serif; letter-spacing: 0.17em; }
+.long-zone-mark b { margin-top: 4px; font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', serif; font-size: 13px; }
+.long-zone-price { display: flex; flex-direction: column; }
+.long-zone-price > span { color: #9b6729; font-size: 9px; font-weight: 700; }
+.long-zone-price strong { margin: 3px 0; font-size: 19px; letter-spacing: -0.03em; }
+.long-zone-price strong i { color: var(--text-tertiary); font-style: normal; font-weight: 400; }
+.long-zone-price small { color: var(--text-tertiary); font-size: 8.5px; line-height: 1.45; }
+.long-zone-rules { display: flex; flex-direction: column; gap: 6px; }
+.long-zone-rules p { color: var(--text-secondary); font-size: 9.5px; line-height: 1.5; }
+.long-zone-rules b { display: inline-block; width: 34px; color: var(--accent); }
+.long-zone-rules p:last-child b { color: #e18a36; }
+.long-zone-scope { grid-column: 1 / -1; padding-top: 9px; border-top: 1px dashed color-mix(in srgb, #d6a15d 32%, var(--separator)); color: var(--text-tertiary); font-size: 8.5px; line-height: 1.5; }
+
 .valuation-note {
   display: grid;
   grid-template-columns: auto auto 1fr;
@@ -4024,6 +4100,12 @@ body {
   .ai-advice-row { display: grid; gap: 2px; }
   .ai-advice-foot { align-items: flex-start; flex-direction: column; }
   .ai-verdict { grid-template-columns: 1fr 1fr; gap: 16px; }
+  .market-session-band { grid-template-columns: 1fr; gap: 7px; }
+  .market-session-band > p { order: 3; }
+  .intraday-strategy { grid-template-columns: 1fr; }
+  .intraday-metrics { border-top: 1px solid var(--separator); border-left: 0; padding-top: 9px; }
+  .long-zone { grid-template-columns: 64px minmax(0, 1fr); }
+  .long-zone-rules { grid-column: 1 / -1; padding-top: 9px; border-top: 1px dashed var(--separator); }
   .verdict-confidence { grid-column: 1 / -1; grid-row: 2; }
   .verdict-levels { padding-left: 14px; }
   .factor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
