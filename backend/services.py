@@ -13,6 +13,7 @@ import time
 import threading
 import concurrent.futures
 import math
+from difflib import SequenceMatcher
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -1218,6 +1219,11 @@ def _minimum_buy_shares(code):
 def _stock_chat_intent(question):
     text = "".join(str(question or "").lower().split())
     if any(word in text for word in (
+        "什么指标", "哪些指标", "什么数据", "哪些数据", "分析什么",
+        "能看什么", "会给出什么", "还会给出什么", "能做什么",
+    )):
+        return "capabilities"
+    if any(word in text for word in (
         "月k", "月线", "月度", "连跌", "几个月", "一年多",
         "连续下跌", "一直下跌", "一路下跌", "下跌为0个月",
     )):
@@ -1231,6 +1237,88 @@ def _stock_chat_intent(question):
     if any(word in text for word in ("全面", "综合", "整体", "详细分析", "完整分析")):
         return "overview"
     return "technical"
+
+
+def _recent_assistant_repetition(messages):
+    answers = []
+    for item in reversed(messages if isinstance(messages, list) else []):
+        if isinstance(item, dict) and item.get("role") == "assistant":
+            content = "".join(str(item.get("content") or "").split())
+            if content:
+                answers.append(content)
+            if len(answers) == 2:
+                break
+    return len(answers) == 2 and (
+        answers[0] == answers[1] or SequenceMatcher(None, answers[0], answers[1]).ratio() >= 0.92
+    )
+
+
+def _repetition_complaint(question, messages):
+    text = "".join(str(question or "").lower().split())
+    complaint = any(word in text for word in ("只回一句话", "只会回一句", "怎么又一样", "又是这句", "怎么重复", "一直重复", "复读"))
+    return complaint and _recent_assistant_repetition(messages)
+
+
+def _stock_chat_response_style(question, messages=None):
+    text = "".join(str(question or "").lower().split())
+    if _repetition_complaint(question, messages):
+        return "normal"
+    if any(word in text for word in ("用一句话", "一句话回答", "一句话说", "只用一句", "一行说", "简短点", "简洁点", "说重点")):
+        return "one_sentence"
+    if any(word in text for word in ("详细点", "展开说", "具体说", "多说点")):
+        return "detailed"
+    return "normal"
+
+
+def _latest_user_question(messages):
+    for item in reversed(messages if isinstance(messages, list) else []):
+        if isinstance(item, dict) and item.get("role") == "user":
+            content = str(item.get("content") or "").strip()
+            if content:
+                return content
+    return ""
+
+
+def _style_only_followup(question, messages=None):
+    text = "".join(str(question or "").lower().split())
+    if _repetition_complaint(question, messages):
+        return False
+    markers = ("用一句话", "一句话回答", "一句话说", "只用一句", "一行说", "简短点", "简洁点", "说重点", "详细点", "展开说", "具体说", "多说点")
+    return len(text) <= 18 and any(marker in text for marker in markers)
+
+
+def _one_sentence(value, limit=220):
+    text = "，".join(part.strip(" ，；。") for part in str(value or "").splitlines() if part.strip())
+    text = text.replace("。", "；").replace("！", "；").replace("？", "；").strip(" ，；")
+    if len(text) > limit:
+        text = text[:limit].rstrip("，；、 ")
+    return text + "。"
+
+
+def _stock_capabilities_answer(q, tech, intraday, monthly, profile):
+    available = []
+    if any(tech.get(key) is not None for key in ("ma5", "ma10", "ma20", "ma60")):
+        available.append("均线与趋势")
+    if tech.get("macd") is not None or tech.get("rsi14") is not None:
+        available.append("MACD、RSI 动量")
+    if tech.get("vol_ratio") is not None:
+        available.append("量能变化")
+    if any(tech.get(key) is not None for key in ("atr_pct", "volatility20", "max_drawdown60")):
+        available.append("波动率、ATR 与回撤")
+    available.append("支撑位、压力位及突破失效条件")
+    if intraday.get("average_price") is not None:
+        available.append("分时均价、日内位置与短时动量")
+    if monthly.get("available"):
+        available.append("月线趋势、连涨连跌和阶段回撤")
+    if q.get("pe") is not None or q.get("pb") is not None:
+        available.append("市盈率、市净率等基础估值")
+    if profile.get("total_capital"):
+        available.append("最低买入金额、资金使用率和单股集中度")
+    return (
+        f"除了“持有关注”这类操作标签，我还能结合 {q['name']} 当前可用数据给出"
+        + "、".join(available)
+        + "；但缺少完整财报、盈利预测、行业景气与估值分位时，不会把技术信号说成确定的价值结论。"
+    )
 
 
 def _display_month(value):
@@ -1308,7 +1396,19 @@ def _trim_chat_answer(value, limit=700):
     return clipped.rstrip("，；、 ") + "。"
 
 
-def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, monthly=None):
+def _repeats_previous_answer(value, messages):
+    current = "".join(str(value or "").split())
+    if len(current) < 24:
+        return False
+    for item in reversed(messages if isinstance(messages, list) else []):
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        previous = "".join(str(item.get("content") or "").split())
+        return bool(previous) and (current == previous or SequenceMatcher(None, current, previous).ratio() >= 0.92)
+    return False
+
+
+def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, monthly=None, messages=None):
     """模型不可用时按问题意图作答，避免无关的整套模板倾倒。"""
     framework = _rule_stock_ai(q, tech)
     position = profile.get("current_position")
@@ -1329,18 +1429,30 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, mont
     clock = clock or _market_clock()
     intraday = intraday or {}
     monthly = monthly or {"available": False, "note": "月 K 数据不足。"}
-    intent = _stock_chat_intent(question)
+    repetition_complaint = _repetition_complaint(question, messages)
+    response_style = _stock_chat_response_style(question, messages)
+    effective_question = _latest_user_question(messages) if (_style_only_followup(question, messages) or repetition_complaint) else question
+    intent = _stock_chat_intent(effective_question)
+    finish = lambda answer: _one_sentence(answer) if response_style == "one_sentence" else answer
+
+    if intent == "capabilities":
+        answer = _stock_capabilities_answer(q, tech, intraday, monthly, profile)
+        if repetition_complaint:
+            answer = "抱歉，刚才降级回复复读了；你上一问实际是在问分析范围。\n\n" + answer
+        return finish(answer)
 
     if intent == "monthly":
-        return _monthly_chat_answer(q, monthly)
+        answer = _monthly_chat_answer(q, monthly)
+        return finish(answer)
 
     if intent == "long_term":
         zone = _long_term_zone(q, tech, framework["support"])
-        return "\n\n".join((
+        answer = "\n\n".join((
             f"{q['name']}当前的长期技术观察区是 {zone['lower']:.2f}–{zone['upper']:.2f}，状态为“{zone['label']}”。",
             f"确认条件：{zone['confirmation']}",
             f"失效条件：{zone['invalidation']} {zone['scope']}",
         ))
+        return finish(answer)
 
     if intent == "intraday":
         detail = f"当前是{clock['label']}（{clock['time']}），现价 {q['price']:.2f}，今日 {q['change_pct']:+.2f}%。"
@@ -1349,7 +1461,8 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, mont
                 f"现价较分时均价 {intraday.get('vs_average_pct'):+.2f}%，"
                 f"近15分钟动量 {intraday.get('momentum_15m_pct'):+.2f}%。"
             )
-        return "\n\n".join((detail, clock["strategy_focus"], f"参考支撑 {framework['support']:.2f}、压力 {framework['resistance']:.2f}。"))
+        answer = "\n\n".join((detail, clock["strategy_focus"], f"参考支撑 {framework['support']:.2f}、压力 {framework['resistance']:.2f}。"))
+        return finish(answer)
 
     if intent == "allocation":
         if position and stock_amount:
@@ -1359,15 +1472,15 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, mont
                 if stock_weight > risk_cap else
                 f"当前 {q['name']} 持仓成本占初始资金 {stock_weight:.1f}%，在 {risk_cap}% 柔性参考线内。"
             )
-            return "\n\n".join((
+            return finish("\n\n".join((
                 concentration,
                 f"初始资金 {total:,.0f} 元、可用资金 {available:,.0f} 元、本股持仓成本 {stock_amount:,.0f} 元。比例用于提示集中度，不自动得出卖出结论。",
                 f"后续重点观察 {framework['support']:.2f} 支撑；若有效跌破，再结合成本和交易记录评估仓位。",
-            ))
+            )))
         if not total:
-            return f"还不能判断 {q['name']} 是否适合你的资金：请先设置初始资金。按现价买入 {lot_label} 约需 {min_buy_amount:,.0f} 元，另需预留交易费用。"
+            return finish(f"还不能判断 {q['name']} 是否适合你的资金：请先设置初始资金。按现价买入 {lot_label} 约需 {min_buy_amount:,.0f} 元，另需预留交易费用。")
         if min_buy_amount > available:
-            return (
+            return finish(
                 f"当前资金暂时买不了 {q['name']} 的最低申报数量。按现价 {q['price']:.2f} 元，"
                 f"{lot_label}约需 {min_buy_amount:,.0f} 元，高于可用资金 {available:,.0f} 元，且尚未计入交易费用。"
             )
@@ -1377,10 +1490,10 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, mont
             if min_buy_weight > risk_cap else
             f"会占初始资金 {min_buy_weight:.1f}%，在 {risk_cap}% 柔性参考线内。"
         )
-        return "\n\n".join((
+        return finish("\n\n".join((
             f"资金上可以买到最低申报数量：{lot_label}约需 {min_buy_amount:,.0f} 元，{concentration}",
             f"是否进入还要看技术条件：参考支撑 {framework['support']:.2f}、压力 {framework['resistance']:.2f}，不要只因资金够就直接买入。",
-        ))
+        )))
 
     if intent == "technical":
         ma20 = tech.get("ma20")
@@ -1397,11 +1510,11 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, mont
             facts.append(f"20日线 {ma20:.2f}")
         if ma60:
             facts.append(f"60日线 {ma60:.2f}")
-        return "\n\n".join((
+        return finish("\n\n".join((
             f"从当前日线技术结构看，{q['name']}处于{trend}状态；这只能回答价格趋势，不能解释公司层面的下跌原因。",
             "关键数据：" + "，".join(facts) + "。",
             f"接下来观察 {framework['support']:.2f} 能否守住，以及 {framework['resistance']:.2f} 能否有效突破；若你想问月线持续多久，我可以按已完成月 K 单独统计。",
-        ))
+        )))
 
     lines = []
     if position and stock_amount:
@@ -1491,7 +1604,7 @@ def _rule_stock_chat(q, tech, profile, question, clock=None, intraday=None, mont
         f"中长线技术观察：{zone['lower']:.2f}–{zone['upper']:.2f} 为观察区，"
         f"需要先满足“{zone['confirmation']}”；{zone['scope']}"
     )
-    return "\n\n".join(lines)
+    return finish("\n\n".join(lines))
 
 
 def get_stock_chat(code, question, messages=None, profile=None):
@@ -1506,6 +1619,11 @@ def get_stock_chat(code, question, messages=None, profile=None):
     clock = st.get("market_session") or _market_clock()
     intraday = st.get("intraday") or _intraday_context(st.get("minute"), q, clock)
     safe_profile = _safe_profile(profile, code)
+    user_question = str(question or "").strip()[:1000]
+    repetition_complaint = _repetition_complaint(user_question, messages)
+    response_style = _stock_chat_response_style(user_question, messages)
+    effective_question = _latest_user_question(messages) if (_style_only_followup(user_question, messages) or repetition_complaint) else user_question
+    current_intent = _stock_chat_intent(effective_question)
     framework = _rule_stock_ai(q, tech)
     monthly = _monthly_trend_context(st.get("kline_month") or [], clock)
     position = safe_profile.get("current_position")
@@ -1539,11 +1657,21 @@ def get_stock_chat(code, question, messages=None, profile=None):
             "reference_cap_is_risk_control_assumption": True,
         },
         "investor": safe_profile,
+        "conversation": {
+            "current_intent": current_intent,
+            "response_style": response_style,
+            "style_only_followup": _style_only_followup(user_question, messages),
+            "repetition_complaint": repetition_complaint,
+        },
     }
     system = (
         "你是 FinForge 的 A 股研究对话助手。你必须只依据提供的行情、技术指标和投资档案回答。"
         "先识别用户当前只问了什么；第一句话必须直接回答，不要自动附送资金、盘中、支撑、长期区间等整套报告。"
         "只补充回答当前问题所必需的依据；除非用户明确要求全面分析，否则控制在 3 个短段落内。"
+        "这是连续对话，必须结合最近历史理解‘还有什么’‘为什么’‘一句话说’等追问，禁止重复上一条回答。"
+        "conversation.repetition_complaint 为 true 时，说明最近两条助手回复发生复读：应简短致歉，并重新回答上一条未被正确回答的用户问题。"
+        "用户问‘有哪些指标、还能分析什么’时，应介绍当前确实可用的分析维度，而不是再次输出个股行情模板。"
+        "conversation.response_style 为 one_sentence 时，只输出一个完整句子；为 detailed 时可以适度展开。"
         "用户询问月K、连跌月份或是否跌了一年时，必须优先引用 monthly_trend：先回答整体趋势是否仍在下跌，"
         "再解释“连续月线收跌”的严格计数。反弹月只会打断连续计数，不能据此否定中期下降趋势；"
         "若 trend_status 仍为下降趋势，禁止用‘没有下跌’或‘不是跌了一年’作为开头。"
@@ -1558,6 +1686,7 @@ def get_stock_chat(code, question, messages=None, profile=None):
         "单股比例是柔性集中度参考；资金足够最低申报数量时，不得仅因超过参考比例就说绝对不能买。"
         "不要承诺收益，不要给出确定性买卖指令，"
         "不要把技术支撑位描述为保证。若资料不足，明确指出缺少什么。回答使用简洁中文，控制在 350 字内。"
+        "只输出适合界面直接展示的纯文本，不使用 Markdown 标题、粗体星号或代码块。"
         "投资档案仅用于本次回答。以下是可信数据上下文：\n" + json.dumps(context, ensure_ascii=False)
     )
     history = []
@@ -1567,12 +1696,18 @@ def get_stock_chat(code, question, messages=None, profile=None):
         content = str(item.get("content") or "").strip()[:1200]
         if content:
             history.append({"role": item["role"], "content": content})
-    user_question = str(question or "").strip()[:1000]
     raw = _call_deepseek([{"role": "system", "content": system}, *history, {"role": "user", "content": user_question}], timeout=45)
-    answer = _trim_chat_answer(raw) if raw else _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday, monthly)
+    if raw and not _repeats_previous_answer(raw, history):
+        answer = _trim_chat_answer(raw.replace("**", ""))
+        if response_style == "one_sentence":
+            answer = _one_sentence(answer)
+        source = "deepseek"
+    else:
+        answer = _rule_stock_chat(q, tech, safe_profile, user_question, clock, intraday, monthly, history)
+        source = "rule"
     return {
         "message": answer,
-        "source": "deepseek" if raw else "rule",
+        "source": source,
         "generated_at": time.strftime("%H:%M"),
         "context": {
             "profile_ready": bool(safe_profile["total_capital"]),
@@ -1580,7 +1715,8 @@ def get_stock_chat(code, question, messages=None, profile=None):
             "stock_weight": round(stock_weight, 1),
             "market_phase": clock["phase"],
             "market_label": clock["label"],
-            "intent": _stock_chat_intent(user_question),
+            "intent": current_intent,
+            "response_style": response_style,
         },
     }
 
