@@ -200,7 +200,7 @@ function StockBody({ data, view, setView, watched, onToggleWatch, onClose, aiSta
             <span className="chart-source">{view === 'minute' ? `${session.is_trading ? '盘中分时' : session.label || '当日分时'} · 均价线` : '前复权 · MA5 / MA10'}</span>
           </div>
           <div className="modal-chart">
-            {view === 'minute' ? <MinuteChart minute={minute} up={up} /> : <KlineChart kline={klineData} />}
+            {view === 'minute' ? <MinuteChart minute={minute} prevClose={quote.prev_close} up={up} /> : <KlineChart kline={klineData} />}
           </div>
         </section>
 
@@ -386,7 +386,7 @@ function fmtTime(t) {
   return s.length >= 4 ? `${s.slice(0, 2)}:${s.slice(2, 4)}` : s
 }
 
-function MinuteChart({ minute, up }) {
+function MinuteChart({ minute, prevClose, up }) {
   const svgRef = useRef(null)
   const [hover, setHover] = useState(null) // {idx, px, w, vx, vy}
   if (!minute || !minute.prices || minute.prices.length < 2) {
@@ -394,7 +394,8 @@ function MinuteChart({ minute, up }) {
   }
   const { prices, volumes, times = [], avg_prices = [] } = minute
   const W = 660, H = 240, PAD = 6, VOL_H = 34
-  const min = Math.min(...prices), max = Math.max(...prices)
+  const base = Number.isFinite(prevClose) && prevClose > 0 ? prevClose : prices[0]
+  const min = Math.min(...prices, base), max = Math.max(...prices, base)
   const span = max - min || 1
   const X = (i) => PAD + (i / (prices.length - 1)) * (W - PAD * 2)
   const Y = (p) => H - PAD - VOL_H - 4 - ((p - min) / span) * (H - PAD * 2 - VOL_H - 8)
@@ -405,8 +406,6 @@ function MinuteChart({ minute, up }) {
     : ''
   const vmax = Math.max(...volumes) || 1
   const gid = up ? 'gradUp' : 'gradDown'
-  const base = prices[0]
-
   const onMove = (e) => {
     const rect = svgRef.current.getBoundingClientRect()
     const w = rect.width

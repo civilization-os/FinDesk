@@ -462,8 +462,8 @@ def get_watchlist(codes=None):
 
     def spark(code):
         try:
-            k = qq_kline(_tx_code(code), 15)
-            return [round(x["close"], 2) for x in k[-12:]]
+            minute = qq_minute(_tx_code(code))
+            return [round(price, 2) for price in (minute.get("prices") or [])]
         except Exception:
             return []
 
@@ -480,6 +480,8 @@ def get_watchlist(codes=None):
             "name": _clean(d["name"]),
             "price": round(d["price"], 2),
             "change": round(d["change_pct"], 2),
+            "prev_close": round(d["prev_close"], 2),
+            "spark_period": "intraday",
             "spark": sparks.get(code, []),
         })
     return out

@@ -44,6 +44,7 @@ export default function Watchlist({ codes, onRemoveStock, onOpenStock }) {
               width={88}
               height={34}
               strokeClass={up ? 'chart-up' : 'chart-down'}
+              referenceValue={w.prev_close}
             />
             <div className="watch-price">
               <div className={`wp num ${up ? 'up' : 'down'}`}>{fmt(w.price)}</div>

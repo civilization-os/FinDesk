@@ -43,7 +43,7 @@ export default function StockPage({ search, codes, onRemoveStock, onOpenStock, o
                   {w.name}
                   <span className="wcode">{w.code}</span>
                 </div>
-                <div className="wsub">点击查看详情</div>
+                <div className="wsub">当日分时 · 点击查看详情</div>
               </div>
               <Sparkline
                 className="watch-spark"
@@ -51,6 +51,7 @@ export default function StockPage({ search, codes, onRemoveStock, onOpenStock, o
                 width={88}
                 height={34}
                 strokeClass={up ? 'chart-up' : 'chart-down'}
+                referenceValue={w.prev_close}
               />
               <div className="watch-price">
                 <div className={`wp num ${up ? 'up' : 'down'}`}>{fmt(w.price)}</div>

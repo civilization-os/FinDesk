@@ -11,20 +11,27 @@ export default function Sparkline({
   fill,
   fillClass,
   className,
+  referenceValue,
 }) {
-  const min = Math.min(...data)
-  const max = Math.max(...data)
+  const values = Array.isArray(data) ? data.filter(Number.isFinite) : []
+  if (!values.length) return null
+
+  const domainValues = Number.isFinite(referenceValue) ? [...values, referenceValue] : values
+  const min = Math.min(...domainValues)
+  const max = Math.max(...domainValues)
   const span = max - min || 1
   const pad = mode === 'bar' ? 1 : 2
 
-  const x = (i) => (i / (data.length - 1)) * (width - pad * 2) + pad
+  const x = (i) => values.length === 1
+    ? width / 2
+    : (i / (values.length - 1)) * (width - pad * 2) + pad
   const y = (v) => height - pad - ((v - min) / span) * (height - pad * 2)
 
   if (mode === 'bar') {
-    const bw = width / data.length
+    const bw = width / values.length
     return (
       <svg className={className} width={width} height={height} aria-hidden="true">
-        {data.map((v, i) => (
+        {values.map((v, i) => (
           <rect
             key={i}
             x={i * bw + bw * 0.22}
@@ -39,7 +46,7 @@ export default function Sparkline({
     )
   }
 
-  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
+  const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
 
   return (
     <svg className={className} width={width} height={height} aria-hidden="true">
