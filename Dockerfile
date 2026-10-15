@@ -11,7 +11,7 @@ COPY public ./public
 COPY src ./src
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.31-alpine AS runtime
 
 LABEL org.opencontainers.image.title="FinForge Web" \
       org.opencontainers.image.description="FinForge React frontend and API gateway" \
